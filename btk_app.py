@@ -60,11 +60,11 @@ def load_settings(path=CONFIG_FILE):
         if key.endswith("window_size"):
             if not isinstance(value, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
                 raise ValueError(f"settings.{key} must use WIDTHxHEIGHT, for example '1024x768'.")
-        elif isinstance(value,bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"settings.{key} must be a positive number of seconds.")
     default_size = tuple(int(part) for part in settings["default_window_size"].split("x"))
     minimum_size = tuple(int(part) for part in settings["minimum_window_size"].split("x"))
-    if any (minimum > default for minimum, default in zip(minimum_size, default_size)):
+    if any(minimum > default for minimum, default in zip(minimum_size, default_size)):
         raise ValueError("settings.minimum_window_size cannot exceed settings.default_window_size.")
     return settings
 
@@ -222,7 +222,7 @@ def get_bgp_peers(session) :
         for ent in entries_by_peer.get(peer["dn"]) or [{}]:
             afs = afs_by_entry.get(ent.get("dn"), [])
             rows.append({
-                "node": node.group(1) if node else"",
+                "node": node.group(1) if node else "",
                 "vrf": vrf.group(1) if vrf else "",
                 "peer": ent.get("addr") or re.sub(r"/(32|128)$", "", peer.get("addr", "")),
                 "asn": peer.get("asn", ""),
@@ -241,7 +241,7 @@ def get_bgp_peers(session) :
 
 
 BGP_ROUTE_COLUMNS = (
-    ("status", "Status", 60), ("path selection", "Selection", 70),
+    ("status", "Status", 60), ("path_selection", "Selection", 70),
     ("route_source", "Source", 60), ("prefix", "Prefix", 180),
     ("next_hop", "Next hop", 150), ("metric", "Metric", 80),
     ("local_pref", "Local preference", 110), ("weight", "Weight", 80),
@@ -345,7 +345,7 @@ def verify_ssh_host_key(host, confirm_key=None, known_hosts_path=None):
             output.write(f"{host} {key.get_name()} {key.get_base64()}\n")
 
 
-def get_bgp_received_routes(session, row, username, password, advertised=False, parsed=True, neighbor_info=False, 
+def get_bgp_received_routes(session, row, username, password, advertised=False, parsed=True, neighbor_info=False,
                             confirm_key=None):
     """Retrieve IPv4 BGP routes or raw neighbor information over SSH."""
     if neighbor_info:
@@ -596,7 +596,7 @@ class BGPReceivedRoutes(ttk.Frame):
                 writer.writeheader()
                 writer.writerows(self.rows)
         except (OSError, csv.Error) as exc:
-            messagebox.showerror("Export CSV", f"Could not export BGP routes;\n{exc}", parent=self)
+            messagebox.showerror("Export CSV", f"Could not export BGP routes:\n{exc}", parent=self)
             return
         self.status.set(f"Exported {len(self.rows)} rows to {path}")
 
@@ -623,7 +623,7 @@ class BGPReceivedRoutes(ttk.Frame):
         counts = {label: len({row["prefix"] for row in changes if row["change"] == label})
                   for label in ("Added", "Removed", "Changed (current)")}
         ttk.Label(win, text=f"{counts['Added']} added / {counts['Removed']} removed / "
-                           f"{counts['Changed (current) ']} changed prefixes",
+                           f"{counts['Changed (current)']} changed prefixes",
                   padding=8).pack(anchor="w")
         explanation = ttk.Label(
             win, justify="left", wraplength=1150, padding=(8, 0, 8, 8),
@@ -736,7 +736,7 @@ def get_l3out_details(session, row):
                 policy = session.get_all(f"/api/mo/{quote(target, safe='/')}.json", **{"rsp-subtree": "full"})
                 if not policy:
                     errors.append((target, "Referenced policy was not returned by APIC."))
-                linked.extend(policy) 
+                linked.extend(policy)
                 pending.extend(policy)
             except Exception as exc:
                 errors.append((target, str(exc)))
@@ -1056,7 +1056,7 @@ def get_vrfs(session):
             r = routes.setdefault(dom, {"v4": 0, "v6": 0, "prefixes": set(), "per_node": {}})
             r[f"v{af}"] += 1
             r["prefixes"].add(prefix)
-            r["per_node"].setdefault(node, [0,0])[0 if af == "4" else 1] += 1
+            r["per_node"].setdefault(node, [0, 0])[0 if af == "4" else 1] += 1
 
     rows = []
     for ctx in ctxs:
@@ -1111,7 +1111,7 @@ def get_routing_table(session, tenant, vrf):
         })
         for obj in objects:
             route = obj.get(cls)
-            if not route: 
+            if not route:
                 continue
             attrs = route["attributes"]
             match = ROUTE_DN.search(attrs.get("dn", ""))
@@ -1301,8 +1301,8 @@ class RoutingTable(ttk.Frame):
         win.geometry(DEFAULT_WINDOW_SIZE)
         counts = {label: len({row["dn"] for row in changes if row["change"] == label})
                   for label in ("Added", "Removed", "Changed (current)")}
-        ttk.Label(win, text=f"{counts['Added']} added / {counts ['Removed']} removed / "
-                           f"{counts['Changed (current) ']} changed routes",
+        ttk.Label(win, text=f"{counts['Added']} added / {counts['Removed']} removed / "
+                           f"{counts['Changed (current)']} changed routes",
                   padding=8).pack(anchor="w")
         columns = (("change", "Change", 150),) + ROUTE_COLUMNS
         tree = build_route_tree(win, columns)
@@ -1667,7 +1667,7 @@ class BTKApp(tk.Tk):
             self._apply_view()
         else:
             self._switch_view(name)
-    
+
     @staticmethod
     def _peer_ip(value):
         try:
@@ -1689,7 +1689,7 @@ class BTKApp(tk.Tk):
 
     def _on_l3out_peer_lookup(self, ok, value):
         if not ok:
-            messagebox.showerror("BGP peer", f"Could not retrieve BGP peer details:\n {value}")
+            messagebox.showerror("BGP peer", f"Could not retrieve BGP peer details:\n{value}")
             return
         session, peer_ip, tenant, vrf, rows = value
         if session is not self.apic_session:
@@ -1703,7 +1703,7 @@ class BTKApp(tk.Tk):
         target_ip = self._peer_ip(peer_ip)
         matches = []
         for row in rows:
-            row_tenant, separator, row_vrf, = row.get("vrf", "").partition(":")
+            row_tenant, separator, row_vrf = row.get("vrf", "").partition(":")
             if (self._peer_ip(row.get("peer", "")) == target_ip and separator
                     and row_tenant == tenant and row_vrf == vrf):
                 matches.append(row)

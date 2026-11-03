@@ -17,13 +17,13 @@ apics:
   - name: Cisco sandbox
     url: https://sandboxapicdc.cisco.com
     verify_ssl: false
-  #- name: Example1
-  #  url: https://apic.lab.local
-  #  username: admin
-  #  password: password
-  #  verify_ssl: false
-  #- name: Example2
-  #  url: https://1.1.1.1/
-  #  username: admin
-  #  password_env: APIC_PASS
-  #  verify_ssl: false
+  - name: Example lab 
+    url: https://apic.lab.local
+    username: admin
+    password: password
+    verify_ssl: false
+  - name: Example lab 33
+    url: https://apic2.lab.local
+    username: admin
+    password_env: APIC_PASS
+    verify_ssl: false

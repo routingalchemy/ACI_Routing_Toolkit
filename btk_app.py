@@ -38,7 +38,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def load_settings(path=CONFIG_FILE):
-    '''Read application settings; timing values are positive seconds.'''
+    """Read application settings; timing values are positive seconds."""
     settings = {
         "default_window_size": "1024x768",
         "minimum_window_size": "1000x600",
@@ -56,14 +56,14 @@ def load_settings(path=CONFIG_FILE):
     if not isinstance(data, dict) or not isinstance(data.get("settings", {}), dict):
         raise ValueError("Config must contain a mapping with an optional 'settings' mapping.")
     settings.update({key: value for key, value in data.get("settings", {}).items() if key in settings})
-    for key, value in settings.items(): 
+    for key, value in settings.items():
         if key.endswith("window_size"):
             if not isinstance(value, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
-                raise ValueError(f"settings.{key} must use WIDTHXHEIGHT, for example '1024x768'.")
-        elif isinstance(value,bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <=0:
+                raise ValueError(f"settings.{key} must use WIDTHxHEIGHT, for example '1024x768'.")
+        elif isinstance(value,bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"settings.{key} must be a positive number of seconds.")
-    default_size = tuple(int (part) for part in settings ["default_window_size"].split("x"))
-    minimum_size = tuple(int (part) for part in settings ["minimum_window_size"].split("x"))
+    default_size = tuple(int(part) for part in settings["default_window_size"].split("x"))
+    minimum_size = tuple(int(part) for part in settings["minimum_window_size"].split("x"))
     if any (minimum > default for minimum, default in zip(minimum_size, default_size)):
         raise ValueError("settings.minimum_window_size cannot exceed settings.default_window_size.")
     return settings
@@ -80,7 +80,7 @@ DEFAULT_TOKEN_LIFETIME = APP_SETTINGS["default_token_lifetime"]
 
 
 def _credentials(entry, default=None):
-    """Return (username, password) from a config block; password_env wins over password"""
+    """Return (username, password) from a config block; password_env wins over password."""
     default = default or ("", "")
     if not isinstance(entry, dict):
         return default
@@ -156,7 +156,7 @@ class APICSession:
     def refresh(self):
         resp = self.session.get(f"{self.url}/api/aaaRefresh.json", timeout=REQUEST_TIMEOUT)
         return self._store_token(self._imdata(resp))
-    
+
     def logout(self, username):
         payload = {"aaaUser": {"attributes": {"name": username}}}
         try:
@@ -166,7 +166,7 @@ class APICSession:
             self.token = None
             self.session.cookies.clear()
 
-    def get (self, path, timeout=REQUEST_TIMEOUT, **params):
+    def get(self, path, timeout=REQUEST_TIMEOUT, **params):
         """GET helper for further API calls, e.g. get('/api/class/fvTenant.json')."""
         resp = self.session.get(f"{self.url}{path}", params=params, timeout=timeout)
         return self._imdata(resp)
@@ -180,7 +180,7 @@ class APICSession:
             if len(chunk) < page_size:
                 return out
             page += 1
-    
+
 
 def _attrs(imdata, cls):
     return [obj[cls]["attributes"] for obj in imdata if cls in obj]
@@ -214,14 +214,14 @@ def get_bgp_peers(session) :
     entries_by_peer = {}
     for ent in entries:
         entries_by_peer.setdefault(ent["dn"].rsplit("/ent-", 1)[0], []).append(ent)
-    
+
     rows = []
     for peer in peers:
         node = re.search(r"/node-(\d+)/", peer["dn"])
         vrf = re.search(r"/dom-([^/]+)", peer["dn"])
         for ent in entries_by_peer.get(peer["dn"]) or [{}]:
             afs = afs_by_entry.get(ent.get("dn"), [])
-            rows.append ({
+            rows.append({
                 "node": node.group(1) if node else"",
                 "vrf": vrf.group(1) if vrf else "",
                 "peer": ent.get("addr") or re.sub(r"/(32|128)$", "", peer.get("addr", "")),
@@ -241,10 +241,10 @@ def get_bgp_peers(session) :
 
 
 BGP_ROUTE_COLUMNS = (
-    ("status", "Status", 60), ("path selection", "Selection", 70), 
-    ("route_source", "Source", 60), ("prefix", "Prefix", 180), 
-    ("next_hop", "Next hop", 150), ("metric", "Metric", 80), 
-    ("local_pref", "Local preference", 110), ("weight", "Weight", 80), 
+    ("status", "Status", 60), ("path selection", "Selection", 70),
+    ("route_source", "Source", 60), ("prefix", "Prefix", 180),
+    ("next_hop", "Next hop", 150), ("metric", "Metric", 80),
+    ("local_pref", "Local preference", 110), ("weight", "Weight", 80),
     ("as_path", "AS path", 260), ("origin", "Origin", 60),
 )
 
@@ -258,7 +258,7 @@ def normalize_bgp_routes(parsed):
             raise ValueError("TextFSM returned a route without a prefix or prefix length.")
         prefix = str(ip_interface(f"{record['prefix']}/{record['prefix_length']}").network)
         rows.append({key: prefix if key == "prefix" else record.get(key, "")
-                    for key, _title, _width in BGP_ROUTE_COLUMNS})
+                     for key, _title, _width in BGP_ROUTE_COLUMNS})
     return rows
 
 
@@ -291,7 +291,7 @@ def build_bgp_diff(saved, current, saved_name="Saved CSV"):
         writer = csv.DictWriter(output, fieldnames=keys, lineterminator="\n")
         writer.writeheader()
         writer.writerows(sorted(rows, key=lambda row: (row["prefix"], row["next_hop"],
-                                                       tuple(row[key] for key in keys))))
+                                                     tuple(row[key] for key in keys))))
         return output.getvalue().splitlines(keepends=True)
 
     return "".join(unified_diff(lines(saved), lines(current), fromfile=saved_name, tofile="Current BGP table"))
@@ -307,13 +307,13 @@ def verify_ssh_host_key(host, confirm_key=None, known_hosts_path=None):
         if path.exists():
             keys.load(str(path))
         return keys
-    
+
     def is_trusted(keys, key):
         if keys.lookup(host) is None:
             return False
         if not keys.check(host, key):
             raise RuntimeError(f"SSH host key changed for {host}. Connection blocked. "
-                              "Verify the new fingerprint independently before updating known_hosts.")
+                               "Verify the new fingerprint independently before updating known_hosts.")
         return True
 
     known = load_keys()
@@ -346,20 +346,20 @@ def verify_ssh_host_key(host, confirm_key=None, known_hosts_path=None):
 
 
 def get_bgp_received_routes(session, row, username, password, advertised=False, parsed=True, neighbor_info=False, 
-                           confirm_key=None):
+                            confirm_key=None):
     """Retrieve IPv4 BGP routes or raw neighbor information over SSH."""
     if neighbor_info:
         parsed = False
     peer = row["details"].get("bgpPeer", {})
     entry = row["details"].get("bgpPeerEntry", {})
-    node = re.match(r"topology/pod-(\d+)/node-(\d+)/", peer.get("dn") or entry.get ("dn", ""))
+    node = re.match(r"topology/pod-(\d+)/node-(\d+)/", peer.get("dn") or entry.get("dn", ""))
     if not node:
         raise ValueError("Cannot determine the peer's leaf and pod from its DN.")
     neighbor = ip_interface(row["peer"]).ip
     if neighbor.version != 4:
         raise ValueError("This command supports IPv4 neighbors only.")
     vrf = row["vrf"]
-    if not re.fullmatch(r" [A-Za-z0-9_.:-]+", vrf):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
         raise ValueError("The VRF name contains unsupported CLI characters.")
     pod_id, node_id = node.groups()
     systems = _attrs(session.get(f"/api/node/mo/topology/pod-{pod_id}/node-{node_id}/sys.json"), "topSystem")
@@ -406,7 +406,7 @@ class BGPReceivedRoutes(ttk.Frame):
         self.rows = []
         self.results = queue.Queue()
         self._closed = threading.Event()
-        self.bind("<Destroy>", lambda event: self._closed.set () if event.widget is self else None)
+        self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 6))
         ttk.Label(bar, text="SSH username:").grid(row=0, column=0, sticky="w")
@@ -485,7 +485,7 @@ class BGPReceivedRoutes(ttk.Frame):
     def _confirm_ssh_key(self, host, key_type, fingerprint):
         request = {"host": host, "key_type": key_type, "fingerprint": fingerprint,
                    "approved": False, "done": threading.Event()}
-        self.results.put((None, request)) 
+        self.results.put((None, request))
         while not request["done"].wait(0.2):
             if self._closed.is_set():
                 return False
@@ -523,7 +523,7 @@ class BGPReceivedRoutes(ttk.Frame):
                     self.session, self.row, username, password, advertised=self.advertised,
                     parsed=parsed, neighbor_info=self.neighbor_info, confirm_key=self._confirm_ssh_key)))
             except Exception as exc:
-                self.results.put ((False, exc))
+                self.results.put((False, exc))
 
         threading.Thread(target=worker, daemon=True).start()
         self.app.after(100, self._poll)
@@ -562,7 +562,7 @@ class BGPReceivedRoutes(ttk.Frame):
             self.status.set("APIC session changed. Reopen the peer to retrieve routes.")
             return
         if not ok:
-            self.status.set(f"{self.route_label} retrieval failed") 
+            self.status.set(f"{self.route_label} retrieval failed")
             messagebox.showerror(self.route_label, f"Could not retrieve {self.route_label.lower()}:\n{value}", parent=self)
             return
         host, command, output = value
@@ -578,7 +578,7 @@ class BGPReceivedRoutes(ttk.Frame):
             self.tree.insert("", "end", values=[row[key] for key, _title, _width in BGP_ROUTE_COLUMNS])
         count = len({row["prefix"] for row in self.rows})
         self.status.set(f"{host} - {command} - {count} prefixes / {len(self.rows)} paths")
-        self.export_btn.configure(state="normal") 
+        self.export_btn.configure(state="normal")
         self.compare_btn.configure(state="normal")
 
     def export(self):
@@ -598,7 +598,7 @@ class BGPReceivedRoutes(ttk.Frame):
         except (OSError, csv.Error) as exc:
             messagebox.showerror("Export CSV", f"Could not export BGP routes;\n{exc}", parent=self)
             return
-        self.status.set(f"Exported {len (self.rows)} rows to {path}")
+        self.status.set(f"Exported {len(self.rows)} rows to {path}")
 
     def compare(self):
         if self.mode.get() != "parsed" or not self.loaded:
@@ -622,7 +622,7 @@ class BGPReceivedRoutes(ttk.Frame):
         win.geometry(DEFAULT_WINDOW_SIZE)
         counts = {label: len({row["prefix"] for row in changes if row["change"] == label})
                   for label in ("Added", "Removed", "Changed (current)")}
-        ttk.Label(win, text=f"{counts['Added']} added / {counts ['Removed']} removed / "
+        ttk.Label(win, text=f"{counts['Added']} added / {counts['Removed']} removed / "
                            f"{counts['Changed (current) ']} changed prefixes",
                   padding=8).pack(anchor="w")
         explanation = ttk.Label(
@@ -630,7 +630,7 @@ class BGPReceivedRoutes(ttk.Frame):
             text="Baseline: selected CSV. Current: last retrieved table, not a live refresh.\n"
                  "Added: only in current. Removed: only in saved. Changed: a path or attribute differs; "
                  "'Changed (saved)' and 'Changed (current)' show before and after.\n"
-                 "Diff: red '-' Lines are saved values; green '+' lines are current values. "
+                 "Diff: red '-' lines are saved values; green '+' lines are current values. "
                  "A modified row appears as a removal followed by an addition.\n"
                  "Counts refer to prefixes, not paths; row order is ignored. "
                  "Choose a CSV for the same leaf, VRF, peer and direction.")
@@ -659,8 +659,8 @@ class BGPReceivedRoutes(ttk.Frame):
         text.grid(row=0, column=0, sticky="nsew")
         ysb.grid(row=0, column=1, sticky="ns")
         xsb.grid(row=1, column=0, sticky="ew")
-        text.tag_configure("added", foreground="#17632d",  background="#e6f4ea")
-        text.tag_configure("removed", foreground="#a61c1c",  background="#fce8e6")
+        text.tag_configure("added", foreground="#17632d", background="#e6f4ea")
+        text.tag_configure("removed", foreground="#a61c1c", background="#fce8e6")
         text.tag_configure("header", foreground="#555555")
         for line in build_bgp_diff(saved, self.rows, Path(path).name).splitlines(keepends=True):
             if line.startswith(("---", "+++", "@@")):
@@ -729,24 +729,24 @@ def get_l3out_details(session, row):
             target = body.get("attributes", {}).get("tDn", "")
             if cls.startswith(("rtctrlRs", "bgpRsPeerTo")) and target.startswith("uni/"):
                 targets.add(target)
-    pending = []
-    for target in sorted(targets - visited):
-        visited.add(target)
-        try:
-            policy = session.get_all(f"/api/mo/{quote(target, safe='/')}.json", **{"rsp-subtree": "full"})
-            if not policy:
-                errors.append((target, "Referenced policy was not returned by APIC."))
-            linked.extend(policy) 
-            pending.extend(policy)
-        except Exception as exc:
-            errors.append((target, str(exc)))
+        pending = []
+        for target in sorted(targets - visited):
+            visited.add(target)
+            try:
+                policy = session.get_all(f"/api/mo/{quote(target, safe='/')}.json", **{"rsp-subtree": "full"})
+                if not policy:
+                    errors.append((target, "Referenced policy was not returned by APIC."))
+                linked.extend(policy) 
+                pending.extend(policy)
+            except Exception as exc:
+                errors.append((target, str(exc)))
 
     sections = {name: [] for name in ("Details", "Node profiles", "Interface profiles", "Peers", "External EPGs", "Route maps")}
     for root in roots:
         body = root["l3extOut"]
         sections["Details"].append({"l3extOut": {
-                "attributes": body.get("attributes", {}),
-                "children": [child for child in body.get("children", []) if "l3extLNodeP" not in child],
+            "attributes": body.get("attributes", {}),
+            "children": [child for child in body.get("children", []) if "l3extLNodeP" not in child],
         }})
     for cls, body, ancestors in walk(roots + linked):
         if cls == "l3extLNodeP":
@@ -816,7 +816,7 @@ class L3OutDetails(ttk.Frame):
             try:
                 self.results.put((True, get_l3out_details(self.session, self.row)))
             except Exception as exc:
-                self.results.put ((False, exc))
+                self.results.put((False, exc))
 
         threading.Thread(target=worker, daemon=True).start()
         self.app.after(100, self._poll)
@@ -837,7 +837,7 @@ class L3OutDetails(ttk.Frame):
                         label = f"BGP neighbor: {peer_ip}"
                     except ValueError:
                         pass
-                dn = attrs.get ("dn", "")
+                dn = attrs.get("dn", "")
                 context = " / ".join(f"{kind}: {name}" for kind, name in
                                      re.findall(r"/(lnodep|lifp)-([^/]+)", dn)) if not parent else ""
                 title = f"{cls}: {label}" if label != cls else cls
@@ -852,7 +852,7 @@ class L3OutDetails(ttk.Frame):
                 L3OutDetails._insert_objects(tree, body.get("children", []), item, excluded, peer_items)
 
     def _open_selected_peer(self, event):
-        tree = self.tree["Peers"]
+        tree = self.trees["Peers"]
         item = tree.identify_row(event.y)
         while item and item not in self.peer_items:
             item = tree.parent(item)
@@ -880,12 +880,12 @@ class L3OutDetails(ttk.Frame):
                     subnet = child["l3extSubnet"].get("attributes", {})
                     scope = set(filter(None, subnet.get("scope", "").split(",")))
                     network = tree.insert(networks, "end", text=subnet.get("ip", "Network"),
-                                            values=(", ".join(scope_labels.get(flag, flag) for flag in sorted(scope)) or "No scope flags",),
-                                            open=True)
+                                          values=(", ".join(scope_labels.get(flag, flag) for flag in sorted(scope)) or "No scope flags",),
+                                          open=True)
                     for flag, label in scope_labels.items():
-                        tree.insert(network, "end", text=label, values=("Yes" if flag in scope else "No",)) 
-                    tree.insert(network, "end", text="Scope (APIC)", values=(subnet.get ("scope", ""),))
-                    aggregate = subnet.get ("aggregate", "")
+                        tree.insert(network, "end", text=label, values=("Yes" if flag in scope else "No",))
+                    tree.insert(network, "end", text="Scope (APIC)", values=(subnet.get("scope", ""),))
+                    aggregate = subnet.get("aggregate", "")
                     tree.insert(network, "end", text="Route aggregation", values=(
                         ", ".join(scope_labels.get(flag, flag) for flag in aggregate.split(",") if flag) or "None",))
                     if subnet.get("descr"):
@@ -906,10 +906,10 @@ class L3OutDetails(ttk.Frame):
         labels = {
             "rtctrlProfile": "Route map", "rtctrlCtxP": "Rule", "rtctrlSubjP": "Match list",
             "rtctrlMatchRtDest": "Prefix", "rtctrlAttrP": "Set actions",
-            "rtctrlRsCtxPoSubjP": "Match list reference", "rtctrlRsScopeToAttrP": "Set actions reference",
+            "rtctrlRsCtxPToSubjP": "Match list reference", "rtctrlRsScopeToAttrP": "Set actions reference",
             "bgpRsPeerToProfile": "Peer route map", "bgpRsPeerToProfileIn": "Inbound peer route map",
             "bgpRsPeerToProfileOut": "Outbound peer route map",
-            "rtctrlSeRtMetric": "Set metric", "rtctrlSeRtMetricType": "Set metric type",
+            "rtctrlSetRtMetric": "Set metric", "rtctrlSetRtMetricType": "Set metric type",
             "rtctrlSetPref": "Set local preference", "rtctrlSetWeight": "Set weight",
             "rtctrlSetASPath": "Set AS path", "rtctrlSetASPathASN": "AS number",
             "rtctrlSetComm": "Set community", "rtctrlSetCommList": "Set community list",
@@ -925,7 +925,7 @@ class L3OutDetails(ttk.Frame):
             "asn": "AS number", "community": "Community", "comm": "Community", "regex": "Pattern",
         }
         index, referenced = {}, set()
-    
+
         def collect(items):
             for obj in items:
                 for cls, body in obj.items():
@@ -960,7 +960,7 @@ class L3OutDetails(ttk.Frame):
                         label += f" ({dn.rsplit('/', 1)[0]})"
                     item = tree.insert(parent, "end", text=label,
                                        values=(attrs.get("direction") or attrs.get("descr", ""),), open=True)
-                    for key, title in attr_labels.items(): 
+                    for key, title in attr_labels.items():
                         if attrs.get(key) not in ("", None):
                             tree.insert(item, "end", text=title, values=(attrs[key],))
                     next_trail = trail | {dn} if dn else trail
@@ -1002,7 +1002,7 @@ class L3OutDetails(ttk.Frame):
             if name == "External EPGs":
                 self._insert_external_epgs(tree, sections[name])
             elif name == "Route maps":
-                self._insert_route_maps(tree, sections [name])
+                self._insert_route_maps(tree, sections[name])
             elif name == "Peers":
                 self._insert_objects(tree, sections[name], peer_items=self.peer_items)
             else:
@@ -1012,11 +1012,11 @@ class L3OutDetails(ttk.Frame):
         for target, error in errors:
             self.trees["Route maps"].insert("", "end", text=f"Unavailable policy: {target}", values=(error,))
         summary = " / ".join(f"{len(sections[name])} {name.lower()}" for name in
-                            ("Node profiles", "Interface profiles", "Peers", "External EPGs"))
+                             ("Node profiles", "Interface profiles", "Peers", "External EPGs"))
         self.status.set(summary + (f" / {len(errors)} referenced policies unavailable" if errors else ""))
 
 
-def get_vrfs(session) :
+def get_vrfs(session):
     """Collect tenant VRFs with their L3Out count and routing-table sizes.
 
     fvCtx           -> tenant VRFs
@@ -1056,7 +1056,7 @@ def get_vrfs(session) :
             r = routes.setdefault(dom, {"v4": 0, "v6": 0, "prefixes": set(), "per_node": {}})
             r[f"v{af}"] += 1
             r["prefixes"].add(prefix)
-            r["per_node"].setdefault(node, [0,0])[0 if af == "4" else 1] +=1
+            r["per_node"].setdefault(node, [0,0])[0 if af == "4" else 1] += 1
 
     rows = []
     for ctx in ctxs:
@@ -1110,22 +1110,22 @@ def get_routing_table(session, tenant, vrf):
             "rsp-subtree-class": nexthop_cls,
         })
         for obj in objects:
-            route = obj.get (cls)
+            route = obj.get(cls)
             if not route: 
                 continue
             attrs = route["attributes"]
-            match = ROUTE_DN.search(attrs.get("dn",""))
+            match = ROUTE_DN.search(attrs.get("dn", ""))
             if not match or match.group(3) != domain:
                 continue
             node, _af, _domain, prefix = match.groups()
-            hops = _attrs(route.get("children", [1]), nexthop_cls)
+            hops = _attrs(route.get("children", []), nexthop_cls)
             for hop in hops or [{}]:
                 rows.append({
                     "node": node, "family": f"IPv{family}", "prefix": prefix,
-                    "next_hop": hop.get ("addr", ""), "interface": hop.get("1f",""),
-                    "protocol": hop.get ("routeType") or attrs.get("routeType", ""),
-                    "preference": hop.get ("pref") or attrs.get ("pref", ""),
-                    "metric": hop.get ("metric") or attrs.get("metric", ""),
+                    "next_hop": hop.get("addr", ""), "interface": hop.get("if", ""),
+                    "protocol": hop.get("routeType") or attrs.get("routeType", ""),
+                    "preference": hop.get("pref") or attrs.get("pref", ""),
+                    "metric": hop.get("metric") or attrs.get("metric", ""),
                     "dn": attrs["dn"],
                 })
     rows.sort(key=lambda row: (int(row["node"]), row["family"], row["prefix"], row["next_hop"]))
@@ -1244,7 +1244,7 @@ class RoutingTable(ttk.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
         self.app.after(100, self._poll)
-    
+
     def _poll(self):
         if not self.winfo_exists():
             return
@@ -1285,7 +1285,7 @@ class RoutingTable(ttk.Frame):
         path = filedialog.askopenfilename(parent=self, title="Compare saved routing table",
                                           initialdir=str(Path(__file__).with_name("routing_tables")),
                                           filetypes=[("CSV files", "*.csv")])
-        if not path: 
+        if not path:
             return
         try:
             saved = read_routes_csv(path, self.tenant, self.vrf)
@@ -1302,7 +1302,7 @@ class RoutingTable(ttk.Frame):
         counts = {label: len({row["dn"] for row in changes if row["change"] == label})
                   for label in ("Added", "Removed", "Changed (current)")}
         ttk.Label(win, text=f"{counts['Added']} added / {counts ['Removed']} removed / "
-                  f"{counts['Changed (current) ']} changed routes",
+                           f"{counts['Changed (current) ']} changed routes",
                   padding=8).pack(anchor="w")
         columns = (("change", "Change", 150),) + ROUTE_COLUMNS
         tree = build_route_tree(win, columns)
@@ -1313,7 +1313,7 @@ class RoutingTable(ttk.Frame):
             tree.insert("", "end", values=[row[col[0]] for col in columns], tags=(row["change"],))
 
 
-# Each output shown in the results list.Column kinds drive sorting: num, ip or text.
+# Each output shown in the results list. Column kinds drive sorting: num, ip or text.
 VIEWS = {
     "bgp": {
         "title": "BGP peers",
@@ -1337,7 +1337,7 @@ VIEWS = {
         "detail_title": lambda r: f"BGP peer {r['peer']} - node {r['node']} / {r['vrf']}",
     },
     "vrf": {
-        "title": "VRFs", 
+        "title": "VRFs",
         "fetch": get_vrfs,
         "columns": (
             ("tenant", "Tenant", 120, "text"), ("vrf", "VRF", 180, "text"),
@@ -1375,8 +1375,8 @@ VIEWS = {
 }
 
 
-class StatusLight (tk.Canvas):
-    COLOURS = {"off": "#9e9e9e", "busy": "#f56800", "ok": "#2ecc40", "error": "#e53935"}
+class StatusLight(tk.Canvas):
+    COLOURS = {"off": "#9e9e9e", "busy": "#f5b800", "ok": "#2ecc40", "error": "#e53935"}
 
     def __init__(self, master, size=22):
         super().__init__(master, width=size, height=size, highlightthickness=0)
@@ -1392,7 +1392,7 @@ class BTKApp(tk.Tk):
         super().__init__()
         self.title("BTK - BGP ToolKit")
         self.geometry(DEFAULT_WINDOW_SIZE)
-        self.resizable(True, True) 
+        self.resizable(True, True)
         self.minsize(*MINIMUM_WINDOW_SIZE)
 
         self.apics = []
@@ -1467,8 +1467,8 @@ class BTKApp(tk.Tk):
         self.list_label_var = tk.StringVar()
         ttk.Label(frm, textvariable=self.list_label_var).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 2))
         self._build_toolbar(frm).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(0, 4))
-        self._build_list(frm).grid(row=8, column=0, columnspan=3, sticky="nsew") 
-        frm.rowconfigure(8, weight=1) 
+        self._build_list(frm).grid(row=8, column=0, columnspan=3, sticky="nsew")
+        frm.rowconfigure(8, weight=1)
         self._switch_view("bgp")
 
     def _build_toolbar(self, parent):
@@ -1511,7 +1511,7 @@ class BTKApp(tk.Tk):
         for combo in (self.filter_col_combo, self.quick_combo, self.sort_col_combo):
             combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_view())
         return bar
-        
+
     def _build_list(self, parent):
         box = ttk.Frame(parent)
         box.columnconfigure(0, weight=1)
@@ -1544,7 +1544,7 @@ class BTKApp(tk.Tk):
     def _load_apic_list(self):
         try:
             self.apics = load_apics()
-        except Exception as exc:  # noga: BLE001
+        except Exception as exc:  # noqa: BLE001
             messagebox.showerror("APIC list", f"Cannot read {CONFIG_FILE.name}:\n{exc}")
             self.apics = []
         names = [f"{a['name']}  ({a['url']})" for a in self.apics]
@@ -1558,7 +1558,7 @@ class BTKApp(tk.Tk):
     def _fill_credentials(self):
         """Pre-fill username/password from config.yaml for the selected APIC.
 
-        Values the user typed are kept when the APIC has no configured credentials; 
+        Values the user typed are kept when the APIC has no configured credentials;
         values that came from the config for another APIC are cleared.
         """
         apic = self._selected_apic() or {"username": "", "password": ""}
@@ -1583,7 +1583,7 @@ class BTKApp(tk.Tk):
         def worker():
             try:
                 self._results.put((kind, True, func()))
-            except Exception as exc:  # noga: BLE001
+            except Exception as exc:  # noqa: BLE001
                 self._results.put((kind, False, exc))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1619,20 +1619,20 @@ class BTKApp(tk.Tk):
         apic, user, session = self._pending
         self._pending = None
         # Only keep the password in the form if it came from config.yaml.
-        self.pwd_var.set (apic ["password"])
+        self.pwd_var.set(apic["password"])
         if not ok:
-            self.light.set ("error")
-            self.status_var.set (f"Login failed: {value}")
+            self.light.set("error")
+            self.status_var.set(f"Login failed: {value}")
             self._set_inputs_enabled(True)
             return
         self.apic_session, self.username = session, user
         self._logged_in_text = f"Logged in to {apic['name']} as {user}"
         self.light.set("ok")
-        self.status_var.set (self._logged_in_text)
+        self.status_var.set(self._logged_in_text)
         self.logout_btn.configure(state="normal")
         self._set_fetch_enabled(True)
         self._start_refresher()
-    
+
     #results list (BGP peers, VRFs, ...)
     def _set_fetch_enabled(self, enabled):
         state = "normal" if enabled and self.apic_session else "disabled"
@@ -1667,6 +1667,7 @@ class BTKApp(tk.Tk):
             self._apply_view()
         else:
             self._switch_view(name)
+    
     @staticmethod
     def _peer_ip(value):
         try:
@@ -1676,19 +1677,19 @@ class BTKApp(tk.Tk):
 
     def open_bgp_peer_details(self, peer_ip, tenant, vrf):
         if not self.apic_session:
-            messagebox.showwarning("BGP peer", "Log in to an APIC before opening BGP peer details")
+            messagebox.showwarning("BGP peer", "Log in to an APIC before opening BGP peer details.")
             return
         rows = self._data.get("bgp")
-        if rows  is not None:
+        if rows is not None:
             self._open_bgp_peer_match(rows, peer_ip, tenant, vrf)
             return
         session = self.apic_session
-        self._run.bg("l3out_peer_lookup", lambda: (session, peer_ip, tenant, vrf, get_bgp_peers(session)))
-        self.staus_var.set(f"Looking up BGP peer {peer_ip} in {tenant}:{vrf}...")
+        self._run_bg("l3out_peer_lookup", lambda: (session, peer_ip, tenant, vrf, get_bgp_peers(session)))
+        self.status_var.set(f"Looking up BGP peer {peer_ip} in {tenant}:{vrf}...")
 
     def _on_l3out_peer_lookup(self, ok, value):
         if not ok:
-            messagebox.showerror("BGP peer", f"Could not retrieve peer details:\n {value}")
+            messagebox.showerror("BGP peer", f"Could not retrieve BGP peer details:\n {value}")
             return
         session, peer_ip, tenant, vrf, rows = value
         if session is not self.apic_session:
@@ -1700,11 +1701,11 @@ class BTKApp(tk.Tk):
 
     def _open_bgp_peer_match(self, rows, peer_ip, tenant, vrf):
         target_ip = self._peer_ip(peer_ip)
-        matches= []
+        matches = []
         for row in rows:
-            row_tenant, separator, row_vrf, = row.get("vrf").partition(":")
+            row_tenant, separator, row_vrf, = row.get("vrf", "").partition(":")
             if (self._peer_ip(row.get("peer", "")) == target_ip and separator
-                and row_tenant == tenant and row_vrf == vrf):
+                    and row_tenant == tenant and row_vrf == vrf):
                 matches.append(row)
         if not matches:
             messagebox.showinfo("BGP peer", f"No BGP peer matching {target_ip} was found in {tenant}:{vrf}.")
@@ -1713,26 +1714,25 @@ class BTKApp(tk.Tk):
             self._open_details(matches[0], "bgp")
             return
 
-
         chooser = tk.Toplevel(self)
-        chooser.title(f"Select peer {target_ip} - {tenant}:{vrf}")
+        chooser.title(f"Select BGP peer {target_ip} - {tenant}:{vrf}")
         chooser.geometry("560x320")
-        ttk.Label(chooser, text=f"This peer is present on {len(matches)} nodes, Select a node.",
+        ttk.Label(chooser, text=f"This peer is present on {len(matches)} nodes. Select a node:",
                   padding=8).pack(anchor="w")
-        tree = tk.Treeview(chooser, columns=("node", "state", "type"), show="headings", selectmode="browse")
+        tree = ttk.Treeview(chooser, columns=("node", "state", "type"), show="headings", selectmode="browse")
         for key, title, width in (("node", "Node", 100), ("state", "State", 150), ("type", "Type", 120)):
             tree.heading(key, text=title)
             tree.column(key, width=width, stretch=True)
         tree.pack(fill="both", expand=True, padx=8, pady=4)
         candidates = {}
         for row in matches:
-            iid = tree.insert("","end", values=(row["node"], row["state"], row["type"]))
+            iid = tree.insert("", "end", values=(row["node"], row["state"], row["type"]))
             candidates[iid] = row
 
         def open_selected(_event=None):
             selection = tree.selection()
             if selection:
-                chooser.sedtroy()
+                chooser.destroy()
                 self._open_details(candidates[selection[0]], "bgp")
 
         tree.bind("<Double-1>", open_selected)
@@ -1787,7 +1787,7 @@ class BTKApp(tk.Tk):
         view = VIEWS[self._view]
         cols = view["columns"]
         terms = self.filter_var.get().lower().split()
-        col_idx = self.filter_col_combo.current ()
+        col_idx = self.filter_col_combo.current()
         keys = [c[0] for c in cols] if col_idx <= 0 else [cols[col_idx - 1][0]]
         quick = view["quick"].get(self.quick_combo.get())
 
@@ -1831,7 +1831,7 @@ class BTKApp(tk.Tk):
             self.list_label_var.set(
                 f"{view['title']} - {shown} ({view['summary'](all_rows)}) "
                 "- double-click a row for details, click a header to sort")
-    
+
     def _sort_by_header(self, key):
         idx = [c[0] for c in VIEWS[self._view]["columns"]].index(key)
         if self.sort_col_combo.current() == idx:
@@ -1866,16 +1866,16 @@ class BTKApp(tk.Tk):
             tabs.pack(fill="both", expand=True)
             detail_parent = ttk.Frame(tabs)
             tabs.add(detail_parent, text="Details")
-        if view == "vrf":
-            routes = RoutingTable(tabs, self, self.apic_session, row["tenant"], row["vrf"])
-            tabs.add(routes, text="Routing table")
-        else:
-            neighbor = BGPReceivedRoutes(tabs, self, self.apic_session, row, neighbor_info=True)
-            tabs.add(neighbor, text="BGP neighbor - SSH")
-            routes = BGPReceivedRoutes(tabs, self, self.apic_session, row)
-            tabs.add(routes, text="BGP routes - SSH")
-            advertised = BGPReceivedRoutes(tabs, self, self.apic_session, row, advertised=True)
-            tabs.add(advertised, text="BGP advertised routes - SSH")
+            if view == "vrf":
+                routes = RoutingTable(tabs, self, self.apic_session, row["tenant"], row["vrf"])
+                tabs.add(routes, text="Routing table")
+            else:
+                neighbor = BGPReceivedRoutes(tabs, self, self.apic_session, row, neighbor_info=True)
+                tabs.add(neighbor, text="BGP neighbor - SSH")
+                routes = BGPReceivedRoutes(tabs, self, self.apic_session, row)
+                tabs.add(routes, text="BGP routes - SSH")
+                advertised = BGPReceivedRoutes(tabs, self, self.apic_session, row, advertised=True)
+                tabs.add(advertised, text="BGP advertised routes - SSH")
 
             tabs.select(detail_parent)
         txt = tk.Text(detail_parent, wrap="none", font=("Menlo", 11))
@@ -1886,7 +1886,7 @@ class BTKApp(tk.Tk):
         for section, attrs in row["details"].items():
             txt.insert("end", f"[{section}]\n")
             if not attrs:
-                txt.insert("end", " (none)\n")
+                txt.insert("end", "  (none)\n")
             for k, v in sorted(attrs.items(), key=lambda kv: (len(kv[0]) if kv[0].isdigit() else 0, kv[0])):
                 if section == "L3Outs":
                     txt.insert("end", f"  {k.split('/', 1)[-1]}\n")
@@ -1978,7 +1978,7 @@ class BTKApp(tk.Tk):
 
     def _on_logout(self, ok, value):
         self._reset_session()
-        self.light.set ("off")
+        self.light.set("off")
         self.status_var.set("Logged out" if ok else f"Logged out (APIC reported: {value})")
 
     def _reset_session(self):
@@ -1997,6 +1997,7 @@ class BTKApp(tk.Tk):
             except Exception:  # noqa: BLE001
                 pass
         self.destroy()
+
 
 if __name__ == "__main__":
     BTKApp().mainloop()

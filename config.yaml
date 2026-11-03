@@ -1,0 +1,29 @@
+
+settings:
+  default_window_size: "1024x768"
+  minimum_window_size: "1000x600"
+  request_timeout: 15
+  paged_timeout: 60
+  token_refresh_interval: 60
+  token_refresh_retry: 30
+  default_token_lifetime: 600
+
+credentials: 
+  username: admin
+  password: "!v3G@!4@Y"
+  password_env: APIC_PASS
+
+apics:
+  - name: Cisco sandbox
+    url: https://sandboxapicdc.cisco.com
+    verify_ssl: false
+  #- name: Example1
+  #  url: https://apic.lab.local
+  #  username: admin
+  #  password: password
+  #  verify_ssl: false
+  #- name: Example2
+  #  url: https://1.1.1.1/
+  #  username: admin
+  #  password_env: APIC_PASS
+  #  verify_ssl: false

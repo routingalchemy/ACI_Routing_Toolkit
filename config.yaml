@@ -1,3 +1,14 @@
+# ART configuration
+#
+# Credentials are optional. When present they pre-fill the login form the 
+# selected APIC. anything missing is typed in the app as usual.
+# - "credentials" apply to every APIC
+# - username/password on an APIC override it fot that APIC
+# - password_env reads the password form an environmental variable instead of 
+#   storing it in this file (e.g. export APIC_PASS='notapass')
+# WARNING: a password in this file is stored in plain test - keep the file private
+# `chmod 600` and never commit it.
+
 
 settings:
   default_window_size: "1024x768"
@@ -10,20 +21,20 @@ settings:
 
 credentials: 
   username: admin
-  password: "!v3G@!4@Y"
-  password_env: APIC_PASS
+  password: # passwd_here
+  password_env: #APIC_PASS
 
 apics:
   - name: Cisco sandbox
     url: https://sandboxapicdc.cisco.com
     verify_ssl: false
-  - name: Example lab 
-    url: https://apic.lab.local
+  - name: Lab 1 APIC
+    url: https://apic.lab1.local
     username: admin
     password: password
     verify_ssl: false
-  - name: Example lab 33
-    url: https://apic2.lab.local
+  - name: Lab 2 APIC
+    url: https://apic.lab2.local
     username: admin
     password_env: APIC_PASS
     verify_ssl: false

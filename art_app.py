@@ -10,7 +10,7 @@ It has a built in export/compare for routing tables and bgp routes for diffing s
 __author__ = "Richard Buknicz"
 __copyright__ = "Copyright 2026, Routingalchemy ACI Routing toolkit"
 __license__ = "GPL"
-__version__ = "0.1"
+__version__ = "0.2"
 __maintainer__ = "Richard Buknicz"
 __status__ = "Development"
 
@@ -19,6 +19,7 @@ import csv
 import hashlib
 import math
 import os
+import sys
 import queue
 import re
 import socket
@@ -33,13 +34,16 @@ from io import StringIO
 from ipaddress import ip_interface
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
+
 
 import requests
 import urllib3
 import yaml
 
-CONFIG_FILE = Path(__file__).with_name("config.yaml")
+
+CONFIG_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+CONFIG_FILE = CONFIG_DIR / "config.yaml"
 SSH_HOST_KEY_LOCK = threading.Lock()
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -412,6 +416,9 @@ class BGPReceivedRoutes(ttk.Frame):
         self.neighbor_info = neighbor_info
         self.route_label = "BGP neighbor" if neighbor_info else ("Advertised routes" if advertised else "Received routes")
         self.rows = []
+        self.sort_key = "prefix"
+        self.sort_descending = False
+        self.result_context = ""
         self.results = queue.Queue()
         self._closed = threading.Event()
         self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
@@ -451,7 +458,28 @@ class BGPReceivedRoutes(ttk.Frame):
         content.rowconfigure(0, weight=1)
         self.parsed_frame = ttk.Frame(content)
         self.parsed_frame.grid(row=0, column=0, sticky="nsew")
+        filter_row = ttk.Frame(self.parsed_frame)
+        filter_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(filter_row, text="Filter:").pack(side="left")
+        self.filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(filter_row, textvariable=self.filter_var, width=22)
+        filter_entry.pack(side="left", padx=(4, 4))
+        filter_entry.bind("<Escape>", lambda _event: self.filter_var.set(""))
+        ttk.Label(filter_row, text="in").pack(side="left")
+        self.filter_col_combo = ttk.Combobox(
+            filter_row, state="readonly", width=14,
+            values=["All columns"] + [column[1] for column in BGP_ROUTE_COLUMNS])
+        self.filter_col_combo.current(0)
+        self.filter_col_combo.pack(side="left", padx=(4, 4))
+        ttk.Button(filter_row, text="Clear", command=self._clear_route_filter).pack(side="left", padx=(4, 0))
+        ttk.Label(filter_row, text='(words are ANDed; prefix "!" to exclude)', foreground="#777").pack(
+            side="left", padx=(8, 0))
+        self.filter_var.trace_add("write", lambda *_: self._apply_route_filter())
+        self.filter_col_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_route_filter())
         self.tree = build_route_tree(self.parsed_frame, BGP_ROUTE_COLUMNS)
+        for key, title, _width in BGP_ROUTE_COLUMNS:
+            self.tree.heading(key, text=title, command=lambda column=key: self._sort_route_header(column))
+        self._update_route_sort_headers()
         self.raw_frame = ttk.Frame(content)
         self.raw_frame.grid(row=0, column=0, sticky="nsew")
         self.raw_frame.columnconfigure(0, weight=1)
@@ -472,6 +500,7 @@ class BGPReceivedRoutes(ttk.Frame):
             self.mode.set("raw")
         self.loaded = False
         self.rows = []
+        self.result_context = ""
         self.tree.delete(*self.tree.get_children())
         self.raw_output.configure(state="normal")
         self.raw_output.delete("1.0", "end")
@@ -582,12 +611,66 @@ class BGPReceivedRoutes(ttk.Frame):
             self.status.set(f"{host} - {command}")
             return
         self.rows = output
-        for row in self.rows:
-            self.tree.insert("", "end", values=[row[key] for key, _title, _width in BGP_ROUTE_COLUMNS])
-        count = len({row["prefix"] for row in self.rows})
-        self.status.set(f"{host} - {command} - {count} prefixes / {len(self.rows)} paths")
+        self.result_context = f"{host} - {command}"
+        self._apply_route_filter()
         self.export_btn.configure(state="normal")
         self.compare_btn.configure(state="normal")
+
+    def _apply_route_filter(self):
+        if not hasattr(self, "tree"):
+            return
+        terms = self.filter_var.get().lower().split()
+        column_index = self.filter_col_combo.current()
+        keys = ([column[0] for column in BGP_ROUTE_COLUMNS] if column_index <= 0
+                else [BGP_ROUTE_COLUMNS[column_index - 1][0]])
+
+        def matches(row):
+            haystack = " ".join(str(row[key]) for key in keys).lower()
+            return all((term[1:] not in haystack) if term.startswith("!") and len(term) > 1
+                       else term in haystack for term in terms)
+
+        visible = sorted((row for row in self.rows if matches(row)), key=self._route_sort_key,
+                         reverse=self.sort_descending)
+        self.tree.delete(*self.tree.get_children())
+        for row in visible:
+            self.tree.insert("", "end", values=[row[key] for key, _title, _width in BGP_ROUTE_COLUMNS])
+        if self.loaded:
+            count = len({row["prefix"] for row in self.rows})
+            self.status.set(f"{self.result_context} - {count} prefixes / {len(self.rows)} paths; "
+                            f"showing {len(visible)}")
+
+    def _route_sort_key(self, row):
+        value = row[self.sort_key]
+        if self.sort_key in ("metric", "local_pref", "weight"):
+            try:
+                return (0, float(value))
+            except (TypeError, ValueError):
+                pass
+        if self.sort_key in ("prefix", "next_hop"):
+            try:
+                address = ip_interface(str(value)).network
+                return (0, address.version, int(address.network_address), address.prefixlen, "")
+            except ValueError:
+                pass
+        return (1, 0, 0, 0, str(value).lower())
+
+    def _sort_route_header(self, key):
+        if self.sort_key == key:
+            self.sort_descending = not self.sort_descending
+        else:
+            self.sort_key = key
+            self.sort_descending = False
+        self._update_route_sort_headers()
+        self._apply_route_filter()
+
+    def _update_route_sort_headers(self):
+        for key, title, _width in BGP_ROUTE_COLUMNS:
+            arrow = ("⬇️" if self.sort_descending else "⬆️") if key == self.sort_key else ""
+            self.tree.heading(key, text=title + arrow)
+
+    def _clear_route_filter(self):
+        self.filter_col_combo.current(0)
+        self.filter_var.set("")
 
     def export(self):
         if self.mode.get() != "parsed" or not self.loaded:
@@ -1220,6 +1303,8 @@ class RoutingTable(ttk.Frame):
         self.app, self.session = app, session
         self.tenant, self.vrf = tenant, vrf
         self.rows = []
+        self.sort_key = "node"
+        self.sort_descending = False
         self.results = queue.Queue()
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 6))
@@ -1231,7 +1316,30 @@ class RoutingTable(ttk.Frame):
         self.compare_btn.pack(side="left")
         self.status = tk.StringVar(value="Not retrieved yet")
         ttk.Label(self, textvariable=self.status).pack(anchor="w", pady=(0, 6))
+        filter_row = ttk.Frame(self)
+        filter_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(filter_row, text="Filter:").pack(side="left")
+        self.filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(filter_row, textvariable=self.filter_var, width=22)
+        filter_entry.pack(side="left", padx=(4, 4))
+        filter_entry.bind("<Escape>", lambda _e: self.filter_var.set(""))
+        ttk.Label(filter_row, text="in").pack(side="left")
+        self.filter_col_combo = ttk.Combobox(filter_row, state="readonly", width=12,
+                                             values=["All columns"] + [col[1] for col in ROUTE_COLUMNS])
+        self.filter_col_combo.current(0)
+        self.filter_col_combo.pack(side="left", padx=(4, 10))
+        ttk.Label(filter_row, text="Show:").pack(side="left")
+        self.quick_combo = ttk.Combobox(filter_row, state="readonly", width=18, values=["All", "IPv4", "IPv6"])
+        self.quick_combo.current(0)
+        self.quick_combo.pack(side="left", padx=(4, 4))
+        ttk.Button(filter_row, text="Clear", command=self._clear_filter).pack(side="left")
+        self.filter_var.trace_add("write", lambda *_: self._apply_filter())
+        for combo in (self.filter_col_combo, self.quick_combo):
+            combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
         self.tree = build_route_tree(self)
+        for key, title, _width in ROUTE_COLUMNS:
+            self.tree.heading(key, text=title, command=lambda column=key: self._sort_by_header(column))
+        self._update_sort_headers()
 
     def retrieve(self):
         if self.session is None or self.session is not self.app.apic_session:
@@ -1270,12 +1378,76 @@ class RoutingTable(ttk.Frame):
             messagebox.showerror("Routing table", f"Could not retrieve routing table:\n{value}", parent=self)
             return
         self.rows = value
-        for row in self.rows:
-            self.tree.insert("", "end", values=[row[col[0]] for col in ROUTE_COLUMNS])
+        protocols = sorted({str(row["protocol"]) for row in self.rows if row["protocol"]}, key=str.lower)
+        self.quick_combo["values"] = ["All", "IPv4", "IPv6"] + [f"Protocol: {protocol}" for protocol in protocols]
+        if self.quick_combo.get() not in self.quick_combo["values"]:
+            self.quick_combo.current(0)
+        self._apply_filter()
         count = len({row["dn"] for row in self.rows})
-        self.status.set(f"{count} routes / {len(self.rows)} next-hop rows" if self.rows else "No routes found")
+        if self.rows:
+            self.status.set(f"{count} routes / {len(self.rows)} next-hop rows; showing {len(self.tree.get_children())}")
+        else:
+            self.status.set("No routes found")
         self.export_btn.configure(state="normal")
         self.compare_btn.configure(state="normal")
+
+    def _apply_filter(self):
+        if not hasattr(self, "tree"):
+            return
+        terms = self.filter_var.get().lower().split()
+        col_index = self.filter_col_combo.current()
+        keys = ([col[0] for col in ROUTE_COLUMNS] if col_index <= 0
+                else [ROUTE_COLUMNS[col_index - 1][0]])
+        quick = self.quick_combo.get()
+        if quick in ("IPv4", "IPv6"):
+            rows = [row for row in self.rows if row["family"] == quick]
+        elif quick.startswith("Protocol: "):
+            protocol = quick.removeprefix("Protocol: ")
+            rows = [row for row in self.rows if str(row["protocol"]) == protocol]
+        else:
+            rows = self.rows
+
+        def matches(row):
+            haystack = " ".join(str(row[key]) for key in keys).lower()
+            return all((term[1:] not in haystack) if term.startswith("!") and len(term) > 1
+                       else term in haystack for term in terms)
+
+        visible = sorted((row for row in rows if matches(row)), key=self._sort_key,
+                         reverse=self.sort_descending)
+        self.tree.delete(*self.tree.get_children())
+        for row in visible:
+            self.tree.insert("", "end", values=[row[col[0]] for col in ROUTE_COLUMNS])
+        if self.rows:
+            count = len({row["dn"] for row in self.rows})
+            self.status.set(f"{count} routes / {len(self.rows)} next-hop rows; showing {len(visible)}")
+
+    def _sort_key(self, row):
+        value = row[self.sort_key]
+        if self.sort_key in ("node", "preference", "metric"):
+            try:
+                return (0, float(value))
+            except (TypeError, ValueError):
+                pass
+        return (1, str(value).lower())
+
+    def _sort_by_header(self, key):
+        if self.sort_key == key:
+            self.sort_descending = not self.sort_descending
+        else:
+            self.sort_key = key
+            self.sort_descending = False
+        self._update_sort_headers()
+        self._apply_filter()
+
+    def _update_sort_headers(self):
+        for key, title, _width in ROUTE_COLUMNS:
+            arrow = ("⬇️" if self.sort_descending else "⬆️") if key == self.sort_key else ""
+            self.tree.heading(key, text=title + arrow)
+
+    def _clear_filter(self):
+        self.filter_col_combo.current(0)
+        self.quick_combo.current(0)
+        self.filter_var.set("")
 
     def export(self):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1412,6 +1584,7 @@ class ARTApp(tk.Tk):
         self._refreshing = False
         self._next_refresh_at = self._token_expires_at = 0.0
         self._logged_in_text = ""
+        self.config_missing = False
 
         self._build_ui()
         self._load_apic_list()
@@ -1426,7 +1599,8 @@ class ARTApp(tk.Tk):
         self.rowconfigure(0, weight=1)
         frm.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="APIC:").grid(row=0, column=0, sticky="w", pady=3)
+        self.apic_label = ttk.Label(frm, text="APIC:")
+        self.apic_label.grid(row=0, column=0, sticky="w", pady=3)
         self.apic_combo = ttk.Combobox(frm, state="readonly")
         self.apic_combo.grid(row=0, column=1, sticky="ew", pady=3)
         self.apic_combo.bind("<<ComboboxSelected>>", lambda _e: self._fill_credentials())
@@ -1545,18 +1719,25 @@ class ARTApp(tk.Tk):
 
     def _set_inputs_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
-        self.apic_combo.configure(state="readonly" if enabled else "disabled")
+        apic_state = "readonly" if enabled and self.apics else state
+        self.apic_combo.configure(state=apic_state)
         for widget in (self.user_entry, self.pwd_entry, self.login_btn, self.reload_btn):
             widget.configure(state=state)
 
     def _load_apic_list(self):
         try:
             self.apics = load_apics()
+            self.config_missing = False
+        except FileNotFoundError:
+            self.apics = []
+            self.config_missing = True
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("APIC list", f"Cannot read {CONFIG_FILE.name}:\n{exc}")
             self.apics = []
         names = [f"{a['name']}  ({a['url']})" for a in self.apics]
         self.apic_combo["values"] = names
+        self.apic_label.configure(text="APIC:" if self.apics else "APIC URL or IP:")
+        self.apic_combo.configure(state="readonly" if self.apics else "normal")
         if names:
             self.apic_combo.current(0)
         else:
@@ -1579,12 +1760,27 @@ class ARTApp(tk.Tk):
         self._config_creds = (user, pwd)
 
         loaded = [n for n, v in (("username", user), ("password", pwd)) if v]
-        self.cred_hint_var.set(f"{' and '.join(loaded).capitalize()} loaded from {CONFIG_FILE.name}"
-                               if loaded else "")
+        if loaded:
+            self.cred_hint_var.set(f"{' and '.join(loaded).capitalize()} loaded from {CONFIG_FILE.name}")
+        elif not self.apics:
+            default_note = " Built-in settings are in use." if self.config_missing else ""
+            self.cred_hint_var.set(f"No APIC configured; enter its URL or IP.{default_note}")
+        else:
+            self.cred_hint_var.set("")
 
     def _selected_apic(self):
         idx = self.apic_combo.current()
-        return self.apics[idx] if 0 <= idx < len(self.apics) else None
+        if 0 <= idx < len(self.apics):
+            return self.apics[idx]
+        if self.apics:
+            return None
+        address = self.apic_combo.get().strip().rstrip("/")
+        if not address:
+            return None
+        url = address if address.startswith(("http://", "https://")) else f"https://{address}"
+        if not urlsplit(url).hostname:
+            return None
+        return {"name": address, "url": url, "verify_ssl": False, "username": "", "password": ""}
 
     # ----- background work (keeps the UI responsive) -----
     def _run_bg(self, kind, func):
@@ -1609,7 +1805,7 @@ class ARTApp(tk.Tk):
         apic = self._selected_apic()
         user, pwd = self.user_var.get().strip(), self.pwd_var.get()
         if not apic:
-            messagebox.showwarning("Login", "Select an APIC first.")
+            messagebox.showwarning("Login", "Select an APIC or enter a valid APIC URL or IP.")
             return
         if not user or not pwd:
             messagebox.showwarning("Login", "Enter username and password.")

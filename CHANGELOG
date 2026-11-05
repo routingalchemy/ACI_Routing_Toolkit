@@ -1,0 +1,12 @@
+version 0.1  Initial version
+- App can login to APIC and list VRFs, L3Outs and BGP peers
+- VRFs can display routing tables
+- L3Out can display its details Nodes and Interfaces, Peers, route-maps
+- BGP peers list all peers and details can be viewed.
+- BGP peers can get `bgp neighbor` info, `bgp routes` and `bgp advertised-routes` through SSH
+- Exporting and comparing is available for routing tables and bgp tables
+
+version 0.2 (current)
+- Filtering and sorting for routing table and bgp tables views
+- allowing the app to work without `config.yaml` and add possibility to enter APIC IP manually
+

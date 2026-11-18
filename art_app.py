@@ -384,9 +384,15 @@ def get_ospf_lsdb(session, row):
 
     objects = session.get_all("/api/class/ospfDb.json", **{
         "query-target-filter": f'wcard(ospfDb.dn,"topology/pod-{pod_id}/node-{node_id}/")',
+        "rsp-subtree": "children",
+        "rsp-subtree-class": "ospfLsaRec",
     })
     lsdb = []
-    for attrs in _attrs(objects, "ospfDb"):
+    for obj in objects:
+        db = obj.get("ospfDb")
+        if not db:
+            continue
+        attrs = db.get("attributes", {})
         dn = attrs.get("dn", "")
         if f"/node-{node_id}/" not in dn:
             continue
@@ -399,7 +405,10 @@ def get_ospf_lsdb(session, row):
             db_area = db_area_match.group(1) if db_area_match else ""
         if area and db_area and db_area != area:
             continue
-        lsdb.append(attrs)
+        for child in db.get("children", []):
+            lsa_record = child.get("ospfLsaRec")
+            if lsa_record:
+                lsdb.append(lsa_record.get("attributes", {}))
     return sorted(lsdb, key=lambda attrs: attrs.get("dn", "").lower())
 
 
@@ -463,7 +472,7 @@ class OSPFNeighborDetails(tk.Toplevel):
             messagebox.showerror("OSPF LSDB", f"Could not retrieve OSPF LSDB:\n{value}", parent=self)
             return
         if not value:
-            self.status.set("No LSDB entries found for this node, VRF, and area.")
+            self.status.set("No ospfLsaRec records found for this node, VRF, and area.")
             return
         columns = sorted({key for entry in value for key in entry}, key=lambda key: (key != "dn", key.lower()))
         self.tree.configure(columns=columns, displaycolumns=columns)
@@ -473,7 +482,7 @@ class OSPFNeighborDetails(tk.Toplevel):
             self.tree.column(key, width=width, minwidth=80, stretch=key != "dn")
         for entry in value:
             self.tree.insert("", "end", values=[entry.get(key, "") for key in columns])
-        self.status.set(f"{len(value)} LSDB entries from ospfDb for node {self.row['node']}, "
+        self.status.set(f"{len(value)} ospfLsaRec records from ospfDb for node {self.row['node']}, "
                         f"VRF {self.row['vrf']}, area {self.row['area']}")
 
 

@@ -10,7 +10,7 @@ It has a built in export/compare for routing tables and bgp routes for diffing s
 __author__ = "Richard Buknicz"
 __copyright__ = "Copyright 2026, Routingalchemy ACI Routing toolkit"
 __license__ = "GPL"
-__version__ = "0.2"
+__version__ = "0.3"
 __maintainer__ = "Richard Buknicz"
 __status__ = "Development"
 
@@ -27,11 +27,11 @@ import threading
 import time
 import tkinter as tk
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import unified_diff
 from importlib.resources import files
 from io import StringIO
-from ipaddress import ip_interface
+from ipaddress import ip_interface, ip_network
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import quote, urlsplit
@@ -49,6 +49,7 @@ SSH_HOST_KEY_LOCK = threading.Lock()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+
 def load_settings(path=CONFIG_FILE):
     """Read application settings; timing values are positive seconds."""
     settings = {
@@ -59,6 +60,7 @@ def load_settings(path=CONFIG_FILE):
         "token_refresh_interval": 60,
         "token_refresh_retry": 10,
         "default_token_lifetime": 600,
+        "remember_ssh_password": False,
     }
     try:
         with open(path, encoding="utf-8") as source:
@@ -69,7 +71,10 @@ def load_settings(path=CONFIG_FILE):
         raise ValueError("Config must contain a mapping with an optional 'settings' mapping.")
     settings.update({key: value for key, value in data.get("settings", {}).items() if key in settings})
     for key, value in settings.items():
-        if key.endswith("window_size"):
+        if key == "remember_ssh_password":
+            if not isinstance(value, bool):
+                raise ValueError("settings.remember_ssh_password must be true or false.")
+        elif key.endswith("window_size"):
             if not isinstance(value, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", value):
                 raise ValueError(f"settings.{key} must use WIDTHxHEIGHT, for example '1024x768'.")
         elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
@@ -106,6 +111,21 @@ def _credentials(entry, default=None):
     return username, password
 
 
+def load_ssh_credentials(path=CONFIG_FILE):
+    """Return optional SSH credentials configured for leaf connections."""
+    try:
+        with open(path, encoding="utf-8") as source:
+            data = yaml.safe_load(source) or {}
+    except FileNotFoundError:
+        return "", ""
+    if not isinstance(data, dict):
+        raise ValueError("Config must contain a mapping.")
+    return _credentials(data.get("ssh_credentials"))
+
+
+SSH_USERNAME, SSH_PASSWORD = load_ssh_credentials()
+
+
 def load_apics(path=CONFIG_FILE):
     """Return a list of dicts: {name, url, verify_ssl, username, password}."""
     with open(path, encoding="utf-8") as fh:
@@ -127,6 +147,33 @@ def load_apics(path=CONFIG_FILE):
             "password": password,
         })
     return apics
+
+
+def load_ssh_devices(path=CONFIG_FILE):
+    """Return configured remote SSH devices with {name, host, device_type}."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return []
+    if not isinstance(data, dict):
+        raise ValueError("Config must contain a mapping with an optional 'ssh_devices' list.")
+    entries = data.get("ssh_devices", [])
+    if not isinstance(entries, list):
+        raise ValueError("Config 'ssh_devices' must be a list.")
+    devices = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"ssh_devices entry {index} must be a mapping.")
+        name = str(entry.get("name") or "").strip()
+        host = str(entry.get("host") or "").strip()
+        device_type = str(entry.get("device_type") or "cisco_nxos").strip()
+        if not name or not host or any(char.isspace() for char in host):
+            raise ValueError(f"ssh_devices entry {index} must have a name and a valid host.")
+        if not device_type:
+            raise ValueError(f"ssh_devices entry {index} must have a device_type.")
+        devices.append({"name": name, "host": host, "device_type": device_type})
+    return devices
 
 
 class APICSession:
@@ -199,23 +246,56 @@ def _attrs(imdata, cls):
 
 
 def _format_last_flap(value):
-    if not value:
+    return _format_state_change(value)
+
+
+def _format_state_change(value):
+    if value in (None, "", "0", 0):
         return ""
+    text = str(value).strip()
     try:
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return value
+        try:
+            seconds = float(text)
+            if seconds >= 1e18:
+                seconds /= 1e9
+            elif seconds >= 1e15:
+                seconds /= 1e6
+            elif seconds >= 1e12:
+                seconds /= 1e3
+            timestamp = datetime.fromtimestamp(seconds)
+        except (OverflowError, OSError, ValueError):
+            return text
     return timestamp.strftime("%Y.%m.%d - %H:%M:%S")
 
 
+def _timestamp_within_24h(value, now=None):
+    if value in (None, "", "0", 0):
+        return False
+    text = str(value).strip()
+    try:
+        timestamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            seconds = float(text)
+            if seconds >= 1e18:
+                seconds /= 1e9
+            elif seconds >= 1e15:
+                seconds /= 1e6
+            elif seconds >= 1e12:
+                seconds /= 1e3
+            timestamp = datetime.fromtimestamp(seconds).astimezone()
+        except (OverflowError, OSError, ValueError):
+            return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.astimezone()
+    age = (now or datetime.now().astimezone()) - timestamp.astimezone()
+    return timedelta(0) <= age <= timedelta(hours=24)
+
+
 def get_bgp_peers(session) :
-
-
-
-
-
-
-
+    """Return a list of dicts with BGP peer details, including received/advertised prefixes."""
     peers = _attrs(session.get("/api/class/bgpPeer.json"), "bgpPeer")
     entries = _attrs(session.get("/api/class/bgpPeerEntry.json"), "bgpPeerEntry")
     af_entries = _attrs(session.get("/api/class/bgpPeerAfEntry.json"), "bgpPeerAfEntry")
@@ -243,12 +323,48 @@ def get_bgp_peers(session) :
                 "local_ip": ent.get("localIp", ""),
                 "router_id": ent.get("rtrId", ""),
                 "last_flap": _format_last_flap(ent.get("lastFlapTs", "")),
+                "recent_change": _timestamp_within_24h(ent.get("lastFlapTs", "")),
                 "pfx_rcvd": sum(int(af.get("acceptedPaths") or 0) for af in afs),
                 "pfx_sent": sum(int(af.get("pfxSent") or 0) for af in afs),
                 "details": {"bgpPeer": peer, "bgpPeerEntry": ent,
                             **{f"bgpPeerAfEntry ({af.get('type')})": af for af in afs}},
             })
     rows.sort(key=lambda r: (int(r["node"] or 0), r["vrf"], r["peer"]))
+    return rows
+
+
+def get_ospf_neighbors(session):
+    """Return OSPF adjacency rows from the APIC."""
+    neighbors = _attrs(session.get_all("/api/class/ospfAdjEp.json"), "ospfAdjEp")
+    rows = []
+    for attrs in neighbors:
+        dn = attrs.get("dn", "")
+        node = re.search(r"/node-(\d+)/", dn)
+        domain = re.search(r"/dom-\[(?:uni/tn-[^/]+/ctx-)?([^\]]+)\]", dn)
+        vrf = domain.group(1).split(":")[-1] if domain else ""
+        area_match = re.search(r"/area-\[?([^/\]]+)\]", dn)
+        area = attrs.get("areaId") or attrs.get("area") or (area_match.group(1) if area_match else "")
+        neighbor = (attrs.get("addr") or attrs.get("peerId") or attrs.get("rtrId") or
+                    attrs.get("sysId") or "")
+        if not neighbor:
+            adjacency = re.search(r"/adj-\[?([^/\]]+)\]", dn)
+            neighbor = adjacency.group(1) if adjacency else ""
+        state = attrs.get("operSt") or attrs.get("adjSt") or attrs.get("peerSt") or attrs.get("state", "")
+        last_change = next((attrs[key] for key in (
+            "lastStChg", "lastStateChange", "lastStChgTs", "lastStateChangeTs", "stateChgTs", "lastChangeTs")
+            if attrs.get(key) not in (None, "", "0", 0)), "")
+        rows.append({
+            "node": node.group(1) if node else "",
+            "vrf": vrf,
+            "neighbor": neighbor,
+            "area": str(area),
+            "state": str(state),
+            "last_change": _format_state_change(last_change),
+            "recent_change": _timestamp_within_24h(last_change),
+            "interface": attrs.get("ifId", ""),
+            "details": {"ospfAdjEp": attrs},
+        })
+    rows.sort(key=lambda row: (int(row["node"] or 0), row["vrf"].lower(), row["neighbor"].lower()))
     return rows
 
 
@@ -293,6 +409,34 @@ def read_bgp_routes_csv(path):
             row["prefix"] = str(ip_interface(prefix).network)
             rows.append(row)
     return rows
+
+
+def list_bgp_snapshots(directory, vrf, peer, advertised=False):
+    """List valid BGP snapshots for one VRF, peer, and route direction."""
+    directory = Path(directory)
+    direction = "ADV" if advertised else "RCV"
+    peer_ip = str(ip_interface(peer).ip)
+    prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{direction}_{vrf}_{peer_ip}_")
+    snapshots = []
+    if not directory.is_dir():
+        return snapshots
+    for path in directory.glob("*.csv"):
+        if not path.name.startswith(prefix):
+            continue
+        try:
+            read_bgp_routes_csv(path)
+            modified = path.stat().st_mtime
+        except (OSError, UnicodeError, csv.Error, ValueError):
+            continue
+        timestamp = re.search(r"_(\d{8}_\d{6}_\d{6})$", path.stem)
+        try:
+            saved_at = datetime.strptime(timestamp.group(1), "%Y%m%d_%H%M%S_%f") if timestamp else None
+        except ValueError:
+            saved_at = None
+        if saved_at is None:
+            saved_at = datetime.fromtimestamp(modified)
+        snapshots.append((saved_at, path))
+    return sorted(snapshots, key=lambda item: (item[0], item[1].name.lower()), reverse=True)
 
 
 def build_bgp_diff(saved, current, saved_name="Saved CSV"):
@@ -408,6 +552,150 @@ def get_bgp_received_routes(session, row, username, password, advertised=False, 
     return str(host), command, normalize_bgp_routes(output) if parsed else output
 
 
+def get_bgp_peer_iping(session, row, username, password, confirm_key=None):
+    """Run one VRF-scoped iping from the peer's leaf to its BGP peer address."""
+    peer = row["details"].get("bgpPeer", {})
+    entry = row["details"].get("bgpPeerEntry", {})
+    node = re.match(r"topology/pod-(\d+)/node-(\d+)/", peer.get("dn") or entry.get("dn", ""))
+    if not node:
+        raise ValueError("Cannot determine the peer's leaf and pod from its DN.")
+    destination = ip_interface(row["peer"]).ip
+    vrf = row["vrf"]
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
+        raise ValueError("The VRF name contains unsupported CLI characters.")
+    pod_id, node_id = node.groups()
+    systems = _attrs(session.get(f"/api/node/mo/topology/pod-{pod_id}/node-{node_id}/sys.json"), "topSystem")
+    if not systems or not systems[0].get("oobMgmtAddr"):
+        raise ValueError(f"No OOB management address found for leaf {node_id} in pod {pod_id}.")
+    host = ip_interface(systems[0]["oobMgmtAddr"]).ip
+    if host.is_unspecified:
+        raise ValueError(f"Leaf {node_id} has no usable OOB management address.")
+    try:
+        from netmiko import ConnectHandler
+    except ImportError as exc:
+        raise RuntimeError("iping requires Netmiko. Install the ART requirements in your Python environment.") from exc
+    command = f"iping -V {vrf} {destination}"
+    verify_ssh_host_key(str(host), confirm_key)
+    with ConnectHandler(device_type="cisco_nxos", host=str(host), username=username, password=password,
+                        ssh_strict=True, system_host_keys=True, conn_timeout=REQUEST_TIMEOUT,
+                        auth_timeout=REQUEST_TIMEOUT, banner_timeout=REQUEST_TIMEOUT) as connection:
+        output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
+                                         strip_prompt=True, strip_command=True)
+    return str(host), command, output
+
+
+def build_route_lookup_command(prefix, family, vrf="", include_mask=True):
+    """Build a safe NX-OS route lookup command for an IPv4 or IPv6 prefix."""
+    try:
+        network = ip_network(str(prefix), strict=False)
+    except ValueError as exc:
+        raise ValueError("The selected route prefix is invalid.") from exc
+    expected_version = 4 if family == "IPv4" else 6 if family == "IPv6" else None
+    if expected_version is None or network.version != expected_version:
+        raise ValueError("The selected route address family does not match its prefix.")
+    vrf = str(vrf).strip()
+    if vrf and not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
+        raise ValueError("The VRF name contains unsupported CLI characters.")
+    route = str(network) if include_mask else str(network.network_address)
+    command = f"show {'ip' if network.version == 4 else 'ipv6'} route {route}"
+    if vrf:
+        command += f" vrf {vrf}"
+    return command
+
+
+def get_route_from_device(device, username, password, prefix, family, vrf="", confirm_key=None,
+                          include_mask=True):
+    """Retrieve a route prefix from a configured NX-OS device over SSH."""
+    command = build_route_lookup_command(prefix, family, vrf, include_mask)
+    try:
+        from netmiko import ConnectHandler
+    except ImportError as exc:
+        raise RuntimeError("Route lookup requires Netmiko. Install the ART requirements.") from exc
+    host = device["host"]
+    verify_ssh_host_key(host, confirm_key)
+    with ConnectHandler(device_type=device["device_type"], host=host, username=username, password=password,
+                        ssh_strict=True, system_host_keys=True, conn_timeout=REQUEST_TIMEOUT,
+                        auth_timeout=REQUEST_TIMEOUT, banner_timeout=REQUEST_TIMEOUT) as connection:
+        output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
+                                         strip_prompt=True, strip_command=True)
+    return host, command, output
+
+
+def get_iping_choices(session):
+    """Return leaf OOB addresses and VRF routing-domain names for the iping form."""
+    nodes = _attrs(session.get_all("/api/class/fabricNode.json"), "fabricNode")
+    systems_by_node = {}
+    for attrs in _attrs(session.get_all("/api/class/topSystem.json"), "topSystem"):
+        match = re.match(r"topology/pod-(\d+)/node-(\d+)/sys(?:/|$)", attrs.get("dn", ""))
+        if match:
+            systems_by_node[match.groups()] = attrs
+
+    leaves = []
+    for node in nodes:
+        if str(node.get("role") or "").lower() != "leaf":
+            continue
+        match = re.match(r"topology/pod-(\d+)/node-(\d+)(?:/|$)", node.get("dn", ""))
+        if not match:
+            continue
+        pod_id, node_id = match.groups()
+        system = systems_by_node.get((pod_id, node_id), {})
+        try:
+            host = str(ip_interface(system["oobMgmtAddr"]).ip)
+        except (KeyError, ValueError):
+            continue
+        if ip_interface(host).ip.is_unspecified:
+            continue
+        leaves.append({"node": node_id, "pod": pod_id, "host": host,
+                   "label": f"Leaf {node_id} (pod {pod_id}, {host})"})
+    leaves.sort(key=lambda leaf: int(leaf["node"]))
+
+    vrfs = []
+    for attrs in _attrs(session.get("/api/class/fvCtx.json"), "fvCtx"):
+        match = re.match(r"uni/tn-([^/]+)/ctx-(.+)$", attrs.get("dn", ""))
+        if not match:
+            continue
+        tenant, name = match.groups()
+        domain = SPECIAL_DOMS.get((tenant, name), f"{tenant}:{name}")
+        vrfs.append({"tenant": tenant, "name": name, "domain": domain,
+                     "label": f"{tenant}:{name}"})
+    vrfs.sort(key=lambda vrf: vrf["label"].lower())
+    return leaves, vrfs
+
+
+def run_leaf_iping(leaf, vrf, destination, source, username, password, confirm_key=None):
+    """Run one validated, VRF-scoped iping command over SSH to a selected leaf."""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
+        raise ValueError("The VRF name contains unsupported CLI characters.")
+    try:
+        destination_ip = ip_interface(destination.strip()).ip
+    except ValueError as exc:
+        raise ValueError("Enter a valid destination IP address.") from exc
+    source_ip = None
+    if source.strip():
+        try:
+            source_ip = ip_interface(source.strip()).ip
+        except ValueError as exc:
+            raise ValueError("Enter a valid source IP address or leave it blank.") from exc
+        if source_ip.version != destination_ip.version:
+            raise ValueError("The source and destination IP address families must match.")
+    try:
+        from netmiko import ConnectHandler
+    except ImportError as exc:
+        raise RuntimeError("iping requires Netmiko. Install the ART requirements in your Python environment.") from exc
+
+    command = f"iping -V {vrf}"
+    if source_ip:
+        command += f" -S {source_ip}"
+    command += f" {destination_ip}"
+    verify_ssh_host_key(leaf["host"], confirm_key)
+    with ConnectHandler(device_type="cisco_nxos", host=leaf["host"], username=username, password=password,
+                        ssh_strict=True, system_host_keys=True, conn_timeout=REQUEST_TIMEOUT,
+                        auth_timeout=REQUEST_TIMEOUT, banner_timeout=REQUEST_TIMEOUT) as connection:
+        output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
+                                         strip_prompt=True, strip_command=True)
+    return leaf["host"], command, output
+
+
 class BGPReceivedRoutes(ttk.Frame):
     def __init__(self, master, app, session, row, advertised=False, neighbor_info=False):
         super().__init__(master, padding=8)
@@ -425,10 +713,12 @@ class BGPReceivedRoutes(ttk.Frame):
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 6))
         ttk.Label(bar, text="SSH username:").grid(row=0, column=0, sticky="w")
-        self.username = tk.StringVar(value=app.username or "")
+        self.username = tk.StringVar(value=app.ssh_username or app.username or "")
+        app.bind_ssh_credential_vars(self.username, None)
         ttk.Entry(bar, textvariable=self.username, width=24).grid(row=0, column=1, padx=6, pady=3)
         ttk.Label(bar, text="SSH password:").grid(row=1, column=0, sticky="w")
-        self.password = tk.StringVar()
+        self.password = tk.StringVar(value=app.ssh_password)
+        app.bind_ssh_credential_vars(None, self.password)
         password_entry = ttk.Entry(bar, textvariable=self.password, show="*", width=24)
         password_entry.grid(row=1, column=1, padx=6, pady=3)
         password_entry.bind("<Return>", lambda _event: self.retrieve())
@@ -538,7 +828,9 @@ class BGPReceivedRoutes(ttk.Frame):
         if not username or not password:
             messagebox.showwarning(self.route_label, "Enter the leaf SSH username and password.", parent=self)
             return
-        self.password.set("")
+        self.app.remember_ssh_credentials(username, password)
+        if not self.app.remember_ssh_password:
+            self.password.set("")
         self.fetching = True
         self.loaded = False
         parsed = self.mode.get() == "parsed"
@@ -694,9 +986,57 @@ class BGPReceivedRoutes(ttk.Frame):
     def compare(self):
         if self.mode.get() != "parsed" or not self.loaded:
             return
-        path = filedialog.askopenfilename(parent=self, title=f"Compare {self.route_label.lower()}",
-                                          initialdir=str(Path(__file__).with_name("bgp_tables")),
-                                          filetypes=[("CSV files", "*.csv")])
+        directory = Path(__file__).with_name("bgp_tables")
+        peer = str(ip_interface(self.row["peer"]).ip)
+        direction = "ADV" if self.advertised else "RCV"
+        win = tk.Toplevel(self)
+        win.title(f"Saved {self.route_label.lower()} - {self.row['vrf']} / {peer}")
+        win.geometry("680x380")
+        win.minsize(520, 280)
+        win.transient(self.winfo_toplevel())
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(win, columns=("date", "file"), show="headings", selectmode="browse")
+        tree.heading("date", text="Saved")
+        tree.heading("file", text="File")
+        tree.column("date", width=165, minwidth=150, stretch=False)
+        tree.column("file", width=460, minwidth=220, stretch=True)
+        tree.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
+        ysb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        ysb.grid(row=0, column=3, sticky="ns", pady=8)
+        paths = {}
+        for saved_at, path in list_bgp_snapshots(directory, self.row["vrf"], peer, self.advertised):
+            iid = tree.insert("", "end", values=(saved_at.strftime("%Y-%m-%d %H:%M:%S"), path.name))
+            paths[iid] = path
+
+        def compare_path(path):
+            win.destroy()
+            self._compare_file(path)
+
+        def compare_selected(_event=None):
+            selection = tree.selection()
+            if selection:
+                compare_path(paths[selection[0]])
+
+        def browse_file():
+            path = filedialog.askopenfilename(parent=win, title=f"Select {self.route_label.lower()} CSV",
+                                              filetypes=[("CSV files", "*.csv"), ("All files", "*")])
+            if path:
+                compare_path(Path(path))
+
+        tree.bind("<Double-1>", compare_selected)
+        buttons = ttk.Frame(win)
+        buttons.grid(row=1, column=0, columnspan=4, sticky="e", padx=8, pady=(0, 8))
+        ttk.Button(buttons, text="Compare selected", command=compare_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Browse CSV...", command=browse_file).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="left")
+        if not paths:
+            ttk.Label(win, text=f"No {direction} snapshots found for this VRF and peer.").grid(
+                row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 8))
+
+    def _compare_file(self, path):
         if not path:
             return
         try:
@@ -766,6 +1106,301 @@ class BGPReceivedRoutes(ttk.Frame):
         text.configure(state="disabled")
 
 
+class BGPiping(ttk.Frame):
+    def __init__(self, master, app, session, row):
+        super().__init__(master, padding=8)
+        self.app, self.session, self.row = app, session, row
+        self.results = queue.Queue()
+        self._closed = threading.Event()
+        self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
+
+        credentials = ttk.Frame(self)
+        credentials.pack(fill="x", pady=(0, 6))
+        ttk.Label(credentials, text="SSH username:").grid(row=0, column=0, sticky="w")
+        self.username = tk.StringVar(value=app.ssh_username or app.username or "")
+        app.bind_ssh_credential_vars(self.username, None)
+        ttk.Entry(credentials, textvariable=self.username, width=24).grid(row=0, column=1, padx=6, pady=3)
+        ttk.Label(credentials, text="SSH password:").grid(row=1, column=0, sticky="w")
+        self.password = tk.StringVar(value=app.ssh_password)
+        app.bind_ssh_credential_vars(None, self.password)
+        password_entry = ttk.Entry(credentials, textvariable=self.password, show="*", width=24)
+        password_entry.grid(row=1, column=1, padx=6, pady=3)
+        password_entry.bind("<Return>", lambda _event: self.run())
+        self.run_btn = ttk.Button(credentials, text="iping peer", command=self.run)
+        self.run_btn.grid(row=0, column=2, rowspan=2, padx=6)
+
+        self.status = tk.StringVar(value=f"Destination: {row['peer']} in VRF {row['vrf']} on leaf {row['node']}")
+        ttk.Label(self, textvariable=self.status).pack(anchor="w", pady=(0, 6))
+        output_frame = ttk.Frame(self)
+        output_frame.pack(fill="both", expand=True)
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.rowconfigure(0, weight=1)
+        self.output = tk.Text(output_frame, wrap="none", font=("Menlo", 11), state="disabled")
+        ysb = ttk.Scrollbar(output_frame, orient="vertical", command=self.output.yview)
+        xsb = ttk.Scrollbar(output_frame, orient="horizontal", command=self.output.xview)
+        self.output.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        self.output.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+
+    def run(self):
+        if self.run_btn.instate(["disabled"]):
+            return
+        if self.session is None or self.session is not self.app.apic_session:
+            messagebox.showwarning("iping peer", "Reopen the peer from the current APIC session.", parent=self)
+            return
+        username, password = self.username.get().strip(), self.password.get()
+        if not username or not password:
+            messagebox.showwarning("iping peer", "Enter the leaf SSH username and password.", parent=self)
+            return
+        self.app.remember_ssh_credentials(username, password)
+        if not self.app.remember_ssh_password:
+            self.password.set("")
+        self.run_btn.configure(state="disabled")
+        self.status.set(f"Looking up leaf {self.row['node']} OOB address and running iping...")
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.configure(state="disabled")
+
+        def worker():
+            try:
+                result = get_bgp_peer_iping(self.session, self.row, username, password,
+                                             confirm_key=self._confirm_ssh_key)
+                self.results.put((True, result))
+            except Exception as exc:
+                self.results.put((False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.app.after(100, self._poll)
+
+    def _confirm_ssh_key(self, host, key_type, fingerprint):
+        request = {"host": host, "key_type": key_type, "fingerprint": fingerprint,
+                   "approved": False, "done": threading.Event()}
+        self.results.put((None, request))
+        while not request["done"].wait(0.2):
+            if self._closed.is_set():
+                return False
+        return request["approved"] and not self._closed.is_set()
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        try:
+            ok, value = self.results.get_nowait()
+        except queue.Empty:
+            self.app.after(100, self._poll)
+            return
+        if ok is None:
+            try:
+                if self.session is self.app.apic_session:
+                    approved = messagebox.askyesno(
+                        "Trust SSH host key?",
+                        f"Node {self.row['node']} at {value['host']} has an unknown SSH key.\n\n"
+                        f"Key type: {value['key_type']}\nFingerprint: {value['fingerprint']}\n\n"
+                        "Verify this fingerprint independently before accepting.\n"
+                        "Accept and save this key to ~/.ssh/known_hosts?",
+                        parent=self, default=messagebox.NO)
+                    value["approved"] = approved and self.session is self.app.apic_session and not self._closed.is_set()
+            except tk.TclError:
+                value["approved"] = False
+            finally:
+                value["done"].set()
+            if not self._closed.is_set():
+                self.app.after(100, self._poll)
+            return
+
+        self.run_btn.configure(state="normal")
+        if self.session is not self.app.apic_session:
+            self.status.set("APIC session changed. Reopen the peer to run iping.")
+            return
+        if not ok:
+            self.status.set("iping failed")
+            messagebox.showerror("iping peer", f"Could not run iping:\n{value}", parent=self)
+            return
+        host, command, output = value
+        self.status.set(f"{host} - {command}")
+        self.output.configure(state="normal")
+        self.output.insert("1.0", output)
+        self.output.configure(state="disabled")
+
+
+class MainipingWindow(tk.Toplevel):
+    def __init__(self, app, session):
+        super().__init__(app)
+        self.app, self.session = app, session
+        self.title("iping from leaf")
+        self.geometry("760x560")
+        self.minsize(620, 420)
+        self.results = queue.Queue()
+        self._closed = threading.Event()
+        self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
+        self.leaves = []
+        self.vrfs = []
+
+        form = ttk.Frame(self, padding=10)
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Leaf:").grid(row=0, column=0, sticky="w", pady=3)
+        self.leaf_combo = ttk.Combobox(form, state="disabled")
+        self.leaf_combo.grid(row=0, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="VRF:").grid(row=1, column=0, sticky="w", pady=3)
+        self.vrf_combo = ttk.Combobox(form, state="disabled")
+        self.vrf_combo.grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="Destination IP:").grid(row=2, column=0, sticky="w", pady=3)
+        self.destination_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.destination_var).grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="Source IP (optional):").grid(row=3, column=0, sticky="w", pady=3)
+        self.source_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.source_var).grid(row=3, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="SSH username:").grid(row=4, column=0, sticky="w", pady=3)
+        self.username_var = tk.StringVar(value=app.ssh_username or app.username or "")
+        app.bind_ssh_credential_vars(self.username_var, None)
+        ttk.Entry(form, textvariable=self.username_var).grid(row=4, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="SSH password:").grid(row=5, column=0, sticky="w", pady=3)
+        self.password_var = tk.StringVar(value=app.ssh_password)
+        app.bind_ssh_credential_vars(None, self.password_var)
+        password_entry = ttk.Entry(form, textvariable=self.password_var, show="*")
+        password_entry.grid(row=5, column=1, sticky="ew", pady=3)
+        password_entry.bind("<Return>", lambda _event: self.run())
+        self.run_btn = ttk.Button(form, text="iping", command=self.run, state="disabled")
+        self.run_btn.grid(row=6, column=1, sticky="e", pady=(6, 3))
+
+        self.status = tk.StringVar(value="Loading available leaves and VRFs...")
+        ttk.Label(self, textvariable=self.status, padding=(10, 0), wraplength=720).pack(anchor="w", pady=(0, 6))
+        output_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
+        output_frame.pack(fill="both", expand=True)
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.rowconfigure(0, weight=1)
+        self.output = tk.Text(output_frame, wrap="none", font=("Menlo", 11), state="disabled")
+        ysb = ttk.Scrollbar(output_frame, orient="vertical", command=self.output.yview)
+        xsb = ttk.Scrollbar(output_frame, orient="horizontal", command=self.output.xview)
+        self.output.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        self.output.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+
+        def worker():
+            try:
+                self.results.put(("choices", True, get_iping_choices(self.session)))
+            except Exception as exc:
+                self.results.put(("choices", False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def run(self):
+        if self.run_btn.instate(["disabled"]):
+            return
+        if self.session is None or self.session is not self.app.apic_session:
+            messagebox.showwarning("iping", "Reconnect to the APIC before running iping.", parent=self)
+            return
+        leaf_index, vrf_index = self.leaf_combo.current(), self.vrf_combo.current()
+        if not (0 <= leaf_index < len(self.leaves) and 0 <= vrf_index < len(self.vrfs)):
+            messagebox.showwarning("iping", "Select a leaf and VRF.", parent=self)
+            return
+        username, password = self.username_var.get().strip(), self.password_var.get()
+        if not username or not password:
+            messagebox.showwarning("iping", "Enter the leaf SSH username and password.", parent=self)
+            return
+        leaf, vrf = self.leaves[leaf_index], self.vrfs[vrf_index]["domain"]
+        destination, source = self.destination_var.get(), self.source_var.get()
+        self.app.remember_ssh_credentials(username, password)
+        if not self.app.remember_ssh_password:
+            self.password_var.set("")
+        self.run_btn.configure(state="disabled")
+        self.status.set(f"Connecting to {leaf['label']} and running iping in {self.vrfs[vrf_index]['label']}...")
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.configure(state="disabled")
+
+        def worker():
+            try:
+                result = run_leaf_iping(leaf, vrf, destination, source, username, password,
+                                        confirm_key=self._confirm_ssh_key)
+                self.results.put(("run", True, result))
+            except Exception as exc:
+                self.results.put(("run", False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _confirm_ssh_key(self, host, key_type, fingerprint):
+        request = {"host": host, "key_type": key_type, "fingerprint": fingerprint,
+                   "approved": False, "done": threading.Event()}
+        self.results.put(("prompt", request))
+        while not request["done"].wait(0.2):
+            if self._closed.is_set():
+                return False
+        return request["approved"] and not self._closed.is_set()
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        try:
+            result = self.results.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll)
+            return
+        if result[0] == "prompt":
+            request = result[1]
+            try:
+                if self.session is self.app.apic_session:
+                    approved = messagebox.askyesno(
+                        "Trust SSH host key?",
+                        f"Leaf at {request['host']} has an unknown SSH key.\n\n"
+                        f"Key type: {request['key_type']}\nFingerprint: {request['fingerprint']}\n\n"
+                        "Verify this fingerprint independently before accepting.\n"
+                        "Accept and save this key to ~/.ssh/known_hosts?",
+                        parent=self, default=messagebox.NO)
+                    request["approved"] = approved and self.session is self.app.apic_session and not self._closed.is_set()
+            except tk.TclError:
+                request["approved"] = False
+            finally:
+                request["done"].set()
+            if not self._closed.is_set():
+                self.after(100, self._poll)
+            return
+
+        kind, ok, value = result
+        if kind == "choices":
+            if self.session is not self.app.apic_session:
+                self.status.set("APIC session changed. Close this window and reconnect.")
+                return
+            if not ok:
+                self.status.set(f"Could not load leaves and VRFs: {value}")
+                return
+            self.leaves, self.vrfs = value
+            self.leaf_combo["values"] = [leaf["label"] for leaf in self.leaves]
+            self.vrf_combo["values"] = [vrf["label"] for vrf in self.vrfs]
+            if self.leaves:
+                self.leaf_combo.current(0)
+                self.leaf_combo.configure(state="readonly")
+            if self.vrfs:
+                self.vrf_combo.current(0)
+                self.vrf_combo.configure(state="readonly")
+            if self.leaves and self.vrfs:
+                self.run_btn.configure(state="normal")
+                self.status.set("Choose a leaf and VRF, enter the destination IP, then run iping.")
+            else:
+                missing = "leaves with OOB addresses" if not self.leaves else "VRFs"
+                self.status.set(f"No {missing} found on this APIC.")
+        else:
+            self.run_btn.configure(state="normal")
+            if self.session is not self.app.apic_session:
+                self.status.set("APIC session changed. Reconnect before running iping.")
+                return
+            if not ok:
+                self.status.set("iping failed")
+                messagebox.showerror("iping", f"Could not run iping:\n{value}", parent=self)
+                return
+            host, command, output = value
+            self.status.set(f"{host} - {command}")
+            self.output.configure(state="normal")
+            self.output.insert("1.0", output)
+            self.output.configure(state="disabled")
+        if not self._closed.is_set():
+            self.after(100, self._poll)
+
+
 ROUTE_DN = re.compile(r"/node-(\d+)/sys/uribv([46])/dom-([^/]+)/db-rt/rt-\[(.+)\]$")
 # VRFs whose switch-side routing domain name is not "<tenant>:<vrf>".
 SPECIAL_DOMS = {("infra", "overlay-1"): "overlay-1", ("mgmt", "oob"): "management"}
@@ -832,7 +1467,9 @@ def get_l3out_details(session, row):
             except Exception as exc:
                 errors.append((target, str(exc)))
 
-    sections = {name: [] for name in ("Details", "Node profiles", "Interface profiles", "Peers", "External EPGs", "Route maps")}
+    sections = {name: [] for name in (
+        "Details", "Node profiles", "Interface profiles", "Peers", "External EPGs", "Route maps", "Contracts")}
+    contracts = {}
     for root in roots:
         body = root["l3extOut"]
         sections["Details"].append({"l3extOut": {
@@ -848,11 +1485,133 @@ def get_l3out_details(session, row):
             sections["Peers"].append({cls: body})
         elif cls == "l3extInstP":
             sections["External EPGs"].append({cls: body})
+            epg_attrs = body.get("attributes", {})
+            for child in body.get("children", []):
+                for relation_cls, direction in (("fvRsProv", "Provides"), ("fvRsCons", "Consumes")):
+                    if relation_cls not in child:
+                        continue
+                    relation = child[relation_cls].get("attributes", {})
+                    target = relation.get("tDn", "")
+                    if not target:
+                        continue
+                    name = relation.get("tnVzBrCPName") or target.rsplit("/brc-", 1)[-1]
+                    contracts[(target, direction, epg_attrs.get("name", ""))] = {
+                        "dn": target,
+                        "contract": name,
+                        "direction": direction,
+                        "epg": epg_attrs.get("name", ""),
+                    }
         if cls.startswith("rtctrl") and not any(parent.startswith("rtctrl") for parent in ancestors):
             sections["Route maps"].append({cls: body})
         elif cls.startswith("bgpRsPeerTo"):
             sections["Route maps"].append({cls: body})
+    sections["Contracts"] = sorted(
+        contracts.values(), key=lambda item: (item["contract"].lower(), item["direction"], item["epg"].lower()))
     return sections, errors
+
+
+def get_contract_usages(session, contract_dn):
+    """Find provider/consumer objects that reference a contract DN."""
+    relations = (
+        ("fvRsProv", "Provides"), ("fvRsCons", "Consumes"),
+        ("vzRsAnyToProv", "Provides"), ("vzRsAnyToCons", "Consumes"),
+    )
+    usages = {}
+    for relation_class, direction in relations:
+        query = f'eq({relation_class}.tDn,"{contract_dn}")'
+        for attrs in _attrs(session.get_all(f"/api/class/{relation_class}.json", **{
+                "query-target-filter": query}), relation_class):
+            relation_dn = attrs.get("dn", "")
+            if relation_class.startswith("vzRsAnyTo"):
+                object_dn = re.split(r"/rsanyTo(?:Prov|Cons)-", relation_dn, maxsplit=1)[0]
+            else:
+                object_dn = relation_dn.rsplit("/", 1)[0]
+            external_epg = re.search(r"/out-([^/]+)/instP-([^/]+)$", object_dn)
+            application_epg = re.search(r"/ap-([^/]+)/epg-([^/]+)$", object_dn)
+            vrf_any = re.search(r"/ctx-([^/]+)/any$", object_dn)
+            tenant_match = re.search(r"^uni/tn-([^/]+)/", object_dn)
+            if external_epg:
+                object_type, name = "External EPG", external_epg.group(2)
+            elif application_epg:
+                object_type, name = "Application EPG", application_epg.group(2)
+            elif vrf_any:
+                object_type, name = "VRF Any", vrf_any.group(1)
+            else:
+                segment = object_dn.rsplit("/", 1)[-1]
+                object_type, _, name = segment.partition("-")
+                object_type = object_type or "Other object"
+                name = name or segment
+            usage = {
+                "direction": direction,
+                "type": object_type,
+                "tenant": tenant_match.group(1) if tenant_match else "",
+                "name": name,
+                "dn": object_dn,
+            }
+            usages[(direction, object_dn)] = usage
+    return sorted(usages.values(), key=lambda item: (
+        item["direction"], item["type"].lower(), item["tenant"].lower(), item["name"].lower()))
+
+
+class ContractUsageWindow(tk.Toplevel):
+    def __init__(self, master, app, session, contract):
+        super().__init__(master)
+        self.app, self.session, self.contract = app, session, contract
+        self.title(f"Contract usage - {contract['contract']}")
+        self.geometry("900x460")
+        self.minsize(650, 320)
+        self.transient(master.winfo_toplevel())
+        self.results = queue.Queue()
+        self.status = tk.StringVar(value=f"Loading usage for {contract['dn']}...")
+        ttk.Label(self, textvariable=self.status, padding=8).pack(anchor="w")
+
+        frame = ttk.Frame(self, padding=(8, 0, 8, 8))
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        columns = ("direction", "type", "tenant", "name", "dn")
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings")
+        for key, title, width in (("direction", "Direction", 105), ("type", "Object type", 140),
+                                  ("tenant", "Tenant", 140), ("name", "EPG / object", 210),
+                                  ("dn", "Distinguished name", 430)):
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, minwidth=90, stretch=key in ("name", "dn"))
+        ysb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        xsb = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+
+        def worker():
+            try:
+                self.results.put((True, get_contract_usages(session, contract["dn"])))
+            except Exception as exc:
+                self.results.put((False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        try:
+            ok, value = self.results.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll)
+            return
+        if self.session is not self.app.apic_session:
+            self.status.set("APIC session changed. Reopen the L3Out to view contract usage.")
+            return
+        if not ok:
+            self.status.set("Could not retrieve contract usage.")
+            messagebox.showerror("Contract usage", f"Could not retrieve contract usage:\n{value}", parent=self)
+            return
+        for usage in value:
+            self.tree.insert("", "end", values=(usage["direction"], usage["type"], usage["tenant"],
+                                                  usage["name"], usage["dn"]))
+        self.status.set(f"{len(value)} provider/consumer objects use {self.contract['contract']}"
+                        if value else f"No provider/consumer objects found for {self.contract['contract']}.")
 
 
 class L3OutDetails(ttk.Frame):
@@ -861,6 +1620,7 @@ class L3OutDetails(ttk.Frame):
         self.app, self.session, self.row = app, session, row
         self.results = queue.Queue()
         self.peer_items = {}
+        self.contract_items = {}
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 6))
         self.refresh_btn = ttk.Button(bar, text="Refresh details", command=self.retrieve)
@@ -870,16 +1630,24 @@ class L3OutDetails(ttk.Frame):
         tabs = ttk.Notebook(self)
         tabs.pack(fill="both", expand=True)
         self.trees = {}
-        for name in ("Details", "Node profiles", "Interface profiles", "Peers", "External EPGs", "Route maps"):
+        for name in ("Details", "Node profiles", "Interface profiles", "Peers", "External EPGs", "Route maps", "Contracts"):
             page = ttk.Frame(tabs)
             tabs.add(page, text=name)
             page.columnconfigure(0, weight=1)
             page.rowconfigure(0, weight=1)
-            tree = ttk.Treeview(page, columns=("value",), show="tree headings")
-            tree.heading("#0", text="Object / Attribute")
-            tree.heading("value", text="Value")
-            tree.column("#0", width=400, minwidth=200, stretch=False)
-            tree.column("value", width=700, minwidth=200)
+            if name == "Contracts":
+                tree = ttk.Treeview(page, columns=("contract", "direction", "external_epg", "dn"),
+                                    displaycolumns=("contract", "direction", "external_epg"), show="headings")
+                for key, title, width in (("contract", "Contract", 260), ("direction", "Direction", 110),
+                                          ("external_epg", "External EPG", 260), ("dn", "Contract DN", 420)):
+                    tree.heading(key, text=title)
+                    tree.column(key, width=width, minwidth=100, stretch=key == "external_epg")
+            else:
+                tree = ttk.Treeview(page, columns=("value",), show="tree headings")
+                tree.heading("#0", text="Object / Attribute")
+                tree.heading("value", text="Value")
+                tree.column("#0", width=400, minwidth=200, stretch=False)
+                tree.column("value", width=700, minwidth=200)
             ysb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
             xsb = ttk.Scrollbar(page, orient="horizontal", command=tree.xview)
             tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
@@ -888,6 +1656,7 @@ class L3OutDetails(ttk.Frame):
             xsb.grid(row=1, column=0, sticky="ew")
             self.trees[name] = tree
         self.trees["Peers"].bind("<Double-1>", self._open_selected_peer)
+        self.trees["Contracts"].bind("<Double-1>", self._open_selected_contract)
         self.fetching = False
         self.retrieve()
 
@@ -899,9 +1668,10 @@ class L3OutDetails(ttk.Frame):
             return
         self.fetching = True
         self.refresh_btn.configure(state="disabled")
-        self.status.set("Retrieving L3Out profiles, interfaces, peers, External EPGs and route maps...")
+        self.status.set("Retrieving L3Out profiles, interfaces, peers, contracts and route maps...")
         for tree in self.trees.values():
             tree.delete(*tree.get_children())
+        self.contract_items.clear()
 
         def worker():
             try:
@@ -949,6 +1719,19 @@ class L3OutDetails(ttk.Frame):
             item = tree.parent(item)
         if item:
             self.app.open_bgp_peer_details(self.peer_items[item], self.row["tenant"], self.row["vrf"])
+
+    def _insert_contracts(self, tree, contracts):
+        for contract in contracts:
+            iid = tree.insert("", "end", values=(contract["contract"], contract["direction"],
+                                                  contract["epg"], contract["dn"]))
+            self.contract_items[iid] = contract
+
+    def _open_selected_contract(self, event):
+        tree = self.trees["Contracts"]
+        item = tree.identify_row(event.y)
+        contract = self.contract_items.get(item)
+        if contract:
+            ContractUsageWindow(self, self.app, self.session, contract)
 
     @staticmethod
     def _insert_external_epgs(tree, objects):
@@ -1090,7 +1873,9 @@ class L3OutDetails(ttk.Frame):
         sections, errors = value
         for name, tree in self.trees.items():
             excluded = ("l3extLIfP",) if name == "Node profiles" else ()
-            if name == "External EPGs":
+            if name == "Contracts":
+                self._insert_contracts(tree, sections[name])
+            elif name == "External EPGs":
                 self._insert_external_epgs(tree, sections[name])
             elif name == "Route maps":
                 self._insert_route_maps(tree, sections[name])
@@ -1099,11 +1884,14 @@ class L3OutDetails(ttk.Frame):
             else:
                 self._insert_objects(tree, sections[name], excluded=excluded)
             if not sections[name]:
-                tree.insert("", "end", text="No configured objects")
+                if name == "Contracts":
+                    tree.insert("", "end", values=("No contracts configured", "", "", ""))
+                else:
+                    tree.insert("", "end", text="No configured objects")
         for target, error in errors:
             self.trees["Route maps"].insert("", "end", text=f"Unavailable policy: {target}", values=(error,))
         summary = " / ".join(f"{len(sections[name])} {name.lower()}" for name in
-                             ("Node profiles", "Interface profiles", "Peers", "External EPGs"))
+                             ("Node profiles", "Interface profiles", "Peers", "External EPGs", "Contracts"))
         self.status.set(summary + (f" / {len(errors)} referenced policies unavailable" if errors else ""))
 
 
@@ -1251,6 +2039,32 @@ def read_routes_csv(path, tenant, vrf):
     return rows
 
 
+def list_route_snapshots(directory, tenant, vrf):
+    """List valid snapshots for one VRF, newest first."""
+    directory = Path(directory)
+    expected_prefix = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{tenant}_{vrf}_routes_")
+    snapshots = []
+    if not directory.is_dir():
+        return snapshots
+    for path in directory.glob("*.csv"):
+        try:
+            rows = read_routes_csv(path, tenant, vrf)
+            modified = path.stat().st_mtime
+        except (OSError, UnicodeError, csv.Error, ValueError):
+            continue
+        if not rows and not path.name.startswith(expected_prefix):
+            continue
+        timestamp = re.search(r"_routes_(\d{8}_\d{6}_\d{6})$", path.stem)
+        try:
+            saved_at = datetime.strptime(timestamp.group(1), "%Y%m%d_%H%M%S_%f") if timestamp else None
+        except ValueError:
+            saved_at = None
+        if saved_at is None:
+            saved_at = datetime.fromtimestamp(modified)
+        snapshots.append((saved_at, path))
+    return sorted(snapshots, key=lambda item: (item[0], item[1].name.lower()), reverse=True)
+
+
 def compare_routing_tables(saved, current, columns=ROUTE_COLUMNS, identity="dn"):
     """Compare route snapshots by identity, preserving all paths and their attributes."""
     keys = [col[0] for col in columns]
@@ -1337,6 +2151,7 @@ class RoutingTable(ttk.Frame):
         for combo in (self.filter_col_combo, self.quick_combo):
             combo.bind("<<ComboboxSelected>>", lambda _e: self._apply_filter())
         self.tree = build_route_tree(self)
+        self.tree.bind("<Double-1>", self._open_route_lookup)
         for key, title, _width in ROUTE_COLUMNS:
             self.tree.heading(key, text=title, command=lambda column=key: self._sort_by_header(column))
         self._update_sort_headers()
@@ -1421,6 +2236,16 @@ class RoutingTable(ttk.Frame):
             count = len({row["dn"] for row in self.rows})
             self.status.set(f"{count} routes / {len(self.rows)} next-hop rows; showing {len(visible)}")
 
+    def _open_route_lookup(self, event):
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        values = self.tree.item(item, "values")
+        if not values:
+            return
+        route = dict(zip((column[0] for column in ROUTE_COLUMNS), values))
+        RouteLookupWindow(self, self.app, route)
+
     def _sort_key(self, row):
         value = row[self.sort_key]
         if self.sort_key in ("node", "preference", "metric"):
@@ -1462,9 +2287,55 @@ class RoutingTable(ttk.Frame):
         self.status.set(f"Exported {len(self.rows)} rows to {path}")
 
     def compare(self):
-        path = filedialog.askopenfilename(parent=self, title="Compare saved routing table",
-                                          initialdir=str(Path(__file__).with_name("routing_tables")),
-                                          filetypes=[("CSV files", "*.csv")])
+        directory = Path(__file__).with_name("routing_tables")
+        win = tk.Toplevel(self)
+        win.title(f"Saved routing tables - {self.tenant}:{self.vrf}")
+        win.geometry("680x380")
+        win.minsize(520, 280)
+        win.transient(self.winfo_toplevel())
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(win, columns=("date", "file"), show="headings", selectmode="browse")
+        tree.heading("date", text="Saved")
+        tree.heading("file", text="File")
+        tree.column("date", width=165, minwidth=150, stretch=False)
+        tree.column("file", width=460, minwidth=220, stretch=True)
+        tree.grid(row=0, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
+        ysb = ttk.Scrollbar(win, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        ysb.grid(row=0, column=3, sticky="ns", pady=8)
+        paths = {}
+        for saved_at, path in list_route_snapshots(directory, self.tenant, self.vrf):
+            iid = tree.insert("", "end", values=(saved_at.strftime("%Y-%m-%d %H:%M:%S"), path.name))
+            paths[iid] = path
+
+        def compare_path(path):
+            win.destroy()
+            self._compare_file(path)
+
+        def compare_selected(_event=None):
+            selection = tree.selection()
+            if selection:
+                compare_path(paths[selection[0]])
+
+        def browse_file():
+            path = filedialog.askopenfilename(parent=win, title="Select routing-table CSV",
+                                              filetypes=[("CSV files", "*.csv"), ("All files", "*")])
+            if path:
+                compare_path(Path(path))
+
+        tree.bind("<Double-1>", compare_selected)
+        buttons = ttk.Frame(win)
+        buttons.grid(row=1, column=0, columnspan=4, sticky="e", padx=8, pady=(0, 8))
+        ttk.Button(buttons, text="Compare selected", command=compare_selected).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Browse CSV...", command=browse_file).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="Close", command=win.destroy).pack(side="left")
+        if not paths:
+            ttk.Label(win, text="No saved snapshots found for this tenant and VRF.").grid(
+                row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 8))
+
+    def _compare_file(self, path):
         if not path:
             return
         try:
@@ -1493,7 +2364,166 @@ class RoutingTable(ttk.Frame):
             tree.insert("", "end", values=[row[col[0]] for col in columns], tags=(row["change"],))
 
 
-# Each output shown in the results list. Column kinds drive sorting: num, ip or text.
+class RouteLookupWindow(tk.Toplevel):
+    def __init__(self, master, app, route):
+        super().__init__(master)
+        self.app, self.route = app, route
+        self.title(f"Check route {route['prefix']} on another device")
+        self.geometry("900x600")
+        self.minsize(700, 400)
+        self.transient(master.winfo_toplevel())
+        self.results = queue.Queue()
+        self.fetching = False
+        self._closed = threading.Event()
+        self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
+
+        form = ttk.Frame(self, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="Remote device:").grid(row=0, column=0, sticky="w", pady=3)
+        device_names = [f"{device['name']} ({device['host']})" for device in app.ssh_devices]
+        self.device_combo = ttk.Combobox(form, state="readonly", values=device_names, width=38)
+        self.device_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=3)
+        if device_names:
+            self.device_combo.current(0)
+        ttk.Label(form, text="SSH username:").grid(row=1, column=0, sticky="w", pady=3)
+        self.username_var = tk.StringVar(value=app.ssh_username or app.username or "")
+        app.bind_ssh_credential_vars(self.username_var, None)
+        self.username_entry = ttk.Entry(form, textvariable=self.username_var, width=28)
+        self.username_entry.grid(row=1, column=1, sticky="w", padx=6, pady=3)
+        ttk.Label(form, text="SSH password:").grid(row=2, column=0, sticky="w", pady=3)
+        self.password_var = tk.StringVar(value=app.ssh_password)
+        app.bind_ssh_credential_vars(None, self.password_var)
+        self.password_entry = ttk.Entry(form, textvariable=self.password_var, show="*", width=28)
+        self.password_entry.grid(row=2, column=1, sticky="w", padx=6, pady=3)
+        self.password_entry.bind("<Return>", lambda _event: self.retrieve())
+        ttk.Label(form, text="VRF (optional):").grid(row=3, column=0, sticky="w", pady=3)
+        self.vrf_var = tk.StringVar()
+        self.vrf_entry = ttk.Entry(form, textvariable=self.vrf_var, width=28)
+        self.vrf_entry.grid(row=3, column=1, sticky="w", padx=6, pady=3)
+        self.include_mask_var = tk.BooleanVar(value=True)
+        self.mask_checkbox = ttk.Checkbutton(form, text="Include subnet mask", variable=self.include_mask_var)
+        self.mask_checkbox.grid(row=4, column=0, columnspan=2, sticky="w", pady=3)
+        ttk.Label(form, text=f"Route: {route['family']} {route['prefix']}").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=3)
+        self.retrieve_btn = ttk.Button(form, text="Check route", command=self.retrieve,
+                                       state="normal" if device_names else "disabled")
+        self.retrieve_btn.grid(row=0, column=2, rowspan=2, padx=8)
+        form.columnconfigure(1, weight=1)
+
+        self.status = tk.StringVar(
+            value="Ready" if device_names else f"No remote devices configured in {CONFIG_FILE.name}.")
+        ttk.Label(self, textvariable=self.status, padding=(10, 0), wraplength=850).pack(anchor="w", pady=6)
+        output_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
+        output_frame.pack(fill="both", expand=True)
+        output_frame.columnconfigure(0, weight=1)
+        output_frame.rowconfigure(0, weight=1)
+        self.output = tk.Text(output_frame, wrap="none", font=("Menlo", 11), state="disabled")
+        ysb = ttk.Scrollbar(output_frame, orient="vertical", command=self.output.yview)
+        xsb = ttk.Scrollbar(output_frame, orient="horizontal", command=self.output.xview)
+        self.output.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        self.output.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+
+    def _confirm_ssh_key(self, host, key_type, fingerprint):
+        request = {"host": host, "key_type": key_type, "fingerprint": fingerprint,
+                   "approved": False, "done": threading.Event()}
+        self.results.put((None, request))
+        while not request["done"].wait(0.2):
+            if self._closed.is_set():
+                return False
+        return request["approved"] and not self._closed.is_set()
+
+    def retrieve(self):
+        if self.fetching:
+            return
+        index = self.device_combo.current()
+        if not 0 <= index < len(self.app.ssh_devices):
+            messagebox.showwarning("Route lookup", "Select a configured remote device.", parent=self)
+            return
+        username, password = self.username_var.get().strip(), self.password_var.get()
+        if not username or not password:
+            messagebox.showwarning("Route lookup", "Enter the remote device SSH username and password.", parent=self)
+            return
+        self.app.remember_ssh_credentials(username, password)
+        if not self.app.remember_ssh_password:
+            self.password_var.set("")
+        vrf = self.vrf_var.get().strip()
+        include_mask = self.include_mask_var.get()
+        try:
+            build_route_lookup_command(self.route["prefix"], self.route["family"], vrf, include_mask)
+        except ValueError as exc:
+            messagebox.showwarning("Route lookup", str(exc), parent=self)
+            return
+
+        device = self.app.ssh_devices[index]
+        self.fetching = True
+        self.retrieve_btn.configure(state="disabled")
+        self.device_combo.configure(state="disabled")
+        self.username_entry.configure(state="disabled")
+        self.password_entry.configure(state="disabled")
+        self.vrf_entry.configure(state="disabled")
+        self.mask_checkbox.configure(state="disabled")
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.configure(state="disabled")
+        self.status.set(f"Connecting to {device['name']} ({device['host']})...")
+
+        def worker():
+            try:
+                self.results.put((True, get_route_from_device(
+                    device, username, password, self.route["prefix"], self.route["family"],
+                    vrf, confirm_key=self._confirm_ssh_key, include_mask=include_mask)))
+            except Exception as exc:
+                self.results.put((False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        try:
+            ok, value = self.results.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll)
+            return
+        if ok is None:
+            try:
+                approved = messagebox.askyesno(
+                    "Trust SSH host key?",
+                    f"{value['host']} has an unknown SSH key.\n\n"
+                    f"Key type: {value['key_type']}\nFingerprint: {value['fingerprint']}\n\n"
+                    "Verify this fingerprint independently before accepting.\n"
+                    "Accept and save this key to ~/.ssh/known_hosts?",
+                    parent=self, default=messagebox.NO)
+                value["approved"] = approved and not self._closed.is_set()
+            except tk.TclError:
+                value["approved"] = False
+            finally:
+                value["done"].set()
+            if not self._closed.is_set():
+                self.after(100, self._poll)
+            return
+
+        self.fetching = False
+        self.retrieve_btn.configure(state="normal")
+        self.device_combo.configure(state="readonly")
+        self.username_entry.configure(state="normal")
+        self.password_entry.configure(state="normal")
+        self.vrf_entry.configure(state="normal")
+        self.mask_checkbox.configure(state="normal")
+        if not ok:
+            self.status.set("Route lookup failed")
+            messagebox.showerror("Route lookup", f"Could not retrieve route:\n{value}", parent=self)
+            return
+        host, command, output = value
+        self.status.set(f"{host} - {command}")
+        self.output.configure(state="normal")
+        self.output.insert("1.0", output)
+        self.output.configure(state="disabled")
+
+
 VIEWS = {
     "bgp": {
         "title": "BGP peers",
@@ -1515,6 +2545,26 @@ VIEWS = {
         "summary": lambda rows: (f"{sum(r['state'] == 'established' for r in rows)} established, "
                                  f"{sum(r['state'] != 'established' for r in rows)} not established"),
         "detail_title": lambda r: f"BGP peer {r['peer']} - node {r['node']} / {r['vrf']}",
+    },
+    "ospf": {
+        "title": "OSPF neighbors",
+        "fetch": get_ospf_neighbors,
+        "columns": (
+            ("node", "Node", 60, "num"), ("vrf", "VRF", 150, "text"),
+            ("neighbor", "Neighbor", 150, "ip"), ("area", "Area", 130, "text"),
+            ("state", "State", 100, "text"), ("last_change", "Last state change", 190, "text"),
+            ("interface", "Interface", 110, "text"),
+        ),
+        "stretch": ("vrf", "last_change"),
+        "quick": {
+            "All": None,
+            "Full": lambda row: row["state"].lower() == "full",
+            "Not Full": lambda row: row["state"].lower() != "full",
+        },
+        "tag": lambda row: "up" if row["state"].lower() == "full" else "down",
+        "summary": lambda rows: (f"{sum(row['state'].lower() == 'full' for row in rows)} Full, "
+                                 f"{sum(row['state'].lower() != 'full' for row in rows)} not Full"),
+        "detail_title": lambda row: f"OSPF neighbor {row['neighbor']} - node {row['node']} / {row['vrf']}",
     },
     "vrf": {
         "title": "VRFs",
@@ -1555,6 +2605,7 @@ VIEWS = {
 }
 
 
+
 class StatusLight(tk.Canvas):
     COLOURS = {"off": "#9e9e9e", "busy": "#f5b800", "ok": "#2ecc40", "error": "#e53935"}
 
@@ -1576,8 +2627,12 @@ class ARTApp(tk.Tk):
         self.minsize(*MINIMUM_WINDOW_SIZE)
 
         self.apics = []
+        self.ssh_devices = []
         self.apic_session = None
         self.username = None
+        self.remember_ssh_password = APP_SETTINGS["remember_ssh_password"]
+        self.ssh_username = SSH_USERNAME
+        self.ssh_password = SSH_PASSWORD
         self._pending = None
         self._results = queue.Queue()
         self._refresh_job = None
@@ -1634,6 +2689,10 @@ class ARTApp(tk.Tk):
         self.vrf_btn.pack(side="left", padx=6)
         self.l3out_btn = ttk.Button(btns, text="Get BGP peers", command=lambda: self.fetch("bgp"), state="disabled")
         self.l3out_btn.pack(side="left")
+        self.ospf_btn = ttk.Button(btns, text="Get OSPF neighbors", command=lambda: self.fetch("ospf"), state="disabled")
+        self.ospf_btn.pack(side="left", padx=(6, 0))
+        self.iping_btn = ttk.Button(btns, text="iping", command=self.open_iping, state="disabled")
+        self.iping_btn.pack(side="left", padx=(6, 0))
 
         status = ttk.Frame(frm)
         status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
@@ -1702,6 +2761,7 @@ class ARTApp(tk.Tk):
         self.list_tree.tag_configure("up", foreground="#1e8e3e")
         self.list_tree.tag_configure("down", foreground="#d93025")
         self.list_tree.tag_configure("muted", foreground="#8a8a8a")
+        self.list_tree.tag_configure("recent", background="#fff2cc")
         self.list_tree.bind("<Double-1>", self._show_details)
         ysb = ttk.Scrollbar(box, orient="vertical", command=self.list_tree.yview)
         xsb = ttk.Scrollbar(box, orient="horizontal", command=self.list_tree.xview)
@@ -1727,13 +2787,16 @@ class ARTApp(tk.Tk):
     def _load_apic_list(self):
         try:
             self.apics = load_apics()
+            self.ssh_devices = load_ssh_devices()
             self.config_missing = False
         except FileNotFoundError:
             self.apics = []
+            self.ssh_devices = []
             self.config_missing = True
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("APIC list", f"Cannot read {CONFIG_FILE.name}:\n{exc}")
             self.apics = []
+            self.ssh_devices = []
         names = [f"{a['name']}  ({a['url']})" for a in self.apics]
         self.apic_combo["values"] = names
         self.apic_label.configure(text="APIC:" if self.apics else "APIC URL or IP:")
@@ -1816,11 +2879,11 @@ class ARTApp(tk.Tk):
         self.status_var.set(f"Logging in to {apic['name']}...")
 
         session = APICSession(apic["url"], apic["verify_ssl"])
-        self._pending = (apic, user, session)
+        self._pending = (apic, user, pwd, session)
         self._run_bg("login", lambda: session.login(user, pwd))
 
     def _on_login(self, ok, value):
-        apic, user, session = self._pending
+        apic, user, password, session = self._pending
         self._pending = None
         # Only keep the password in the form if it came from config.yaml.
         self.pwd_var.set(apic["password"])
@@ -1829,6 +2892,8 @@ class ARTApp(tk.Tk):
             self.status_var.set(f"Login failed: {value}")
             self._set_inputs_enabled(True)
             return
+        if self.remember_ssh_password:
+            self.ssh_password = password
         self.apic_session, self.username = session, user
         self._logged_in_text = f"Logged in to {apic['name']} as {user}"
         self.light.set("ok")
@@ -1840,8 +2905,25 @@ class ARTApp(tk.Tk):
     #results list (BGP peers, VRFs, ...)
     def _set_fetch_enabled(self, enabled):
         state = "normal" if enabled and self.apic_session else "disabled"
-        for btn in (self.bgp_btn, self.vrf_btn, self.l3out_btn):
+        for btn in (self.bgp_btn, self.vrf_btn, self.l3out_btn, self.ospf_btn, self.iping_btn):
             btn.configure(state=state)
+
+    def open_iping(self):
+        if not self.apic_session:
+            messagebox.showwarning("iping", "Log in to an APIC before opening iping.")
+            return
+        MainipingWindow(self, self.apic_session)
+
+    def bind_ssh_credential_vars(self, username_var=None, password_var=None):
+        if username_var is not None:
+            username_var.trace_add("write", lambda *_: setattr(self, "ssh_username", username_var.get()))
+        if password_var is not None and self.remember_ssh_password:
+            password_var.trace_add("write", lambda *_: setattr(self, "ssh_password", password_var.get()))
+
+    def remember_ssh_credentials(self, username, password):
+        self.ssh_username = username
+        if self.remember_ssh_password:
+            self.ssh_password = password
 
     def fetch(self, name):
         if not self.apic_session or self._fetching:
@@ -2017,7 +3099,10 @@ class ARTApp(tk.Tk):
         self.list_tree.delete(*self.list_tree.get_children())
         self._shown_rows = {}
         for row in rows:
-            iid = self.list_tree.insert("", "end", values=[row[c[0]] for c in cols], tags=(view["tag"](row),))
+            tags = [view["tag"](row)]
+            if row.get("recent_change"):
+                tags.append("recent")
+            iid = self.list_tree.insert("", "end", values=[row[c[0]] for c in cols], tags=tags)
             self._shown_rows[iid] = row
 
         for col, title, _w, _k in cols:
@@ -2032,9 +3117,10 @@ class ARTApp(tk.Tk):
         else:
             total = len(all_rows)
             shown = f"showing {len(rows)} of {total}" if len(rows) != total else f"{total} total"
+            recent_note = " - highlighted = changed within 24h" if self._view in ("bgp", "ospf") else ""
             self.list_label_var.set(
                 f"{view['title']} - {shown} ({view['summary'](all_rows)}) "
-                "- double-click a row for details, click a header to sort")
+                f"- double-click a row for details, click a header to sort{recent_note}")
 
     def _sort_by_header(self, key):
         idx = [c[0] for c in VIEWS[self._view]["columns"]].index(key)
@@ -2080,6 +3166,8 @@ class ARTApp(tk.Tk):
                 tabs.add(routes, text="BGP routes - SSH")
                 advertised = BGPReceivedRoutes(tabs, self, self.apic_session, row, advertised=True)
                 tabs.add(advertised, text="BGP advertised routes - SSH")
+                iping = BGPiping(tabs, self, self.apic_session, row)
+                tabs.add(iping, text="iping peer - SSH")
 
             tabs.select(detail_parent)
         txt = tk.Text(detail_parent, wrap="none", font=("Menlo", 11))

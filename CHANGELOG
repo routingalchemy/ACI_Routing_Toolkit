@@ -6,7 +6,14 @@ version 0.1  Initial version
 - BGP peers can get `bgp neighbor` info, `bgp routes` and `bgp advertised-routes` through SSH
 - Exporting and comparing is available for routing tables and bgp tables
 
-version 0.2 (current)
+version 0.2
 - Filtering and sorting for routing table and bgp tables views
 - allowing the app to work without `config.yaml` and add possibility to enter APIC IP manually
 
+version 0.3 (current)
+- added iping utility for troubleshooting
+- implemented compare picker, where only tenant and vrf matched compare files are shown and their dates
+- OSPF neighbors option
+- highlight state change within the last 24h for BGP and OSPF
+- option to store and reuse APIC password for SSH usage
+- Separate tab under L3Out for associated contracts and from there details of contracts (consumer/provider)

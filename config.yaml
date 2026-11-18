@@ -8,6 +8,10 @@
 #   storing it in this file (e.g. export APIC_PASS='notapass')
 # WARNING: a password in this file is stored in plain test - keep the file private
 # `chmod 600` and never commit it.
+# Optional  SSH credentials. Use password_env instead of a plain password.
+# ssh_credentials:
+#   username: leaf-user
+#   password_env: ACI_SSH_PASSWORD
 
 
 settings:
@@ -18,11 +22,13 @@ settings:
   token_refresh_interval: 60
   token_refresh_retry: 30
   default_token_lifetime: 600
+  remember_ssh_password: true
 
 credentials: 
   username: admin
   password: # passwd_here
-  password_env: #APIC_PASS
+  password_env: #ACI_APIC_PASSWORD
+
 
 apics:
   - name: Cisco sandbox
@@ -38,3 +44,12 @@ apics:
     username: admin
     password_env: APIC_PASS
     verify_ssl: false
+
+# Devices available for VRF route lookups over SSH. Use credentials accepted
+# by each switch in the application's route lookup window.
+ssh_devices: []
+# Example:
+# ssh_devices:
+#   - name: Example NX-OS switch
+#     host: 192.0.2.10
+#     device_type: cisco_nxos

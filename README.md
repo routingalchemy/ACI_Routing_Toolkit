@@ -5,6 +5,7 @@ ART is a desktop application for inspecting Cisco ACI routing and BGP informatio
 ## Features
 
 - List BGP peers and inspect their state, address families, prefix counts, and flap time.
+- List OSPF neighbors and inspect their `ospfDb` LSDB entries by node, VRF, and area.
 - List tenant VRFs with L3Out, deployment, and IPv4/IPv6 route counts.
 - Retrieve a VRF routing table with next hops, export it to CSV, and compare it with a saved snapshot.
 - List L3Outs and inspect their profiles, interfaces, peers, External EPGs, and route-control policies.
@@ -56,13 +57,18 @@ export APIC_PASSWORD='your-secret'
 
 Unset credentials can be entered in the login form. Configured credentials pre-fill the form. The sample `config.yaml` contains example lab entries, including a literal password: remove or replace those values before use, keep the file private, and do not commit real credentials. On Linux/macOS, restrict access with `chmod 600 config.yaml`.
 
-The optional `settings` mapping controls window sizes and request/token-refresh timeouts. Values must be positive, and the minimum window size must not exceed the default size. If `config.yaml` is missing, the app uses built-in defaults for settings, but APIC entries still need to be configured.
+The optional `settings` mapping controls window sizes and request/token-refresh timeouts. Numeric values must be positive, and the minimum window size must not exceed the default size. `remember_ssh_password` is a boolean, defaulting to `false`; set it to `true` to reuse the password from a successful APIC login in SSH forms. This password is kept in application memory only and is not written to `config.yaml`. SSH credentials configured in `ssh_credentials` initially take precedence until a successful APIC login replaces the in-memory password. If `config.yaml` is missing, the app uses built-in defaults for settings, but APIC entries still need to be configured.
+
+```yaml
+settings:
+  remember_ssh_password: true
+```
 
 ## Using the application
 
 1. Select an APIC, enter credentials if they were not loaded from the config, and choose **Login**.
-2. Select **Get VRFs**, **Get L3Out**, or **Get BGP peers** to retrieve that view. Use the filter, quick-filter, and sort controls above the results.
-3. Double-click a result to open its details. VRF details include a routing-table tab; BGP peer details include SSH tabs for neighbor information, received routes, and advertised routes.
+2. Select **Get VRFs**, **Get L3Out**, **Get BGP peers**, or **Get OSPF neighbors** to retrieve that view. Use the filter, quick-filter, and sort controls above the results.
+3. Double-click a result to open its details. OSPF neighbor details include LSDB entries from `ospfDb`; VRF details include a routing-table tab; BGP peer details include SSH tabs for neighbor information, received routes, and advertised routes.
 4. For SSH retrieval, enter credentials accepted by the leaf. The first connection to an unknown SSH host key asks for confirmation. Independently verify the displayed fingerprint before accepting; accepted keys are saved in `~/.ssh/known_hosts`. A changed key is blocked.
 5. Parsed routing tables and BGP routes can be exported to CSV and compared with a prior export. Exports are written under `routing_tables/` or `bgp_tables/` beside `art_app.py`. Raw BGP output is displayed but is not available for CSV export or comparison.
 6. Choose **Logout** when finished.

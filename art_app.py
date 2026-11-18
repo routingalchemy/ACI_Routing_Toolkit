@@ -368,6 +368,115 @@ def get_ospf_neighbors(session):
     return rows
 
 
+def get_ospf_lsdb(session, row):
+    """Return LSAs from ospfDb for the selected neighbor's node, VRF, and area."""
+    adjacency = row["details"].get("ospfAdjEp", {})
+    adjacency_dn = adjacency.get("dn", "")
+    node_match = re.search(r"topology/pod-(\d+)/node-(\d+)/", adjacency_dn)
+    if not node_match:
+        raise ValueError("Cannot determine the OSPF neighbor's pod and node from its DN.")
+    pod_id, node_id = node_match.groups()
+    domain_match = re.search(r"/dom-\[([^\]]+)\]", adjacency_dn)
+    area = str(row.get("area", "")).strip()
+    if not area:
+        area_match = re.search(r"/area-\[?([^/\]]+)\]?", adjacency_dn)
+        area = area_match.group(1) if area_match else ""
+
+    objects = session.get_all("/api/class/ospfDb.json", **{
+        "query-target-filter": f'wcard(ospfDb.dn,"topology/pod-{pod_id}/node-{node_id}/")',
+    })
+    lsdb = []
+    for attrs in _attrs(objects, "ospfDb"):
+        dn = attrs.get("dn", "")
+        if f"/node-{node_id}/" not in dn:
+            continue
+        db_domain = re.search(r"/dom-\[([^\]]+)\]", dn)
+        if domain_match and db_domain and db_domain.group(1) != domain_match.group(1):
+            continue
+        db_area = str(attrs.get("areaId") or attrs.get("area") or "").strip()
+        if not db_area:
+            db_area_match = re.search(r"/area-\[?([^/\]]+)\]?", dn)
+            db_area = db_area_match.group(1) if db_area_match else ""
+        if area and db_area and db_area != area:
+            continue
+        lsdb.append(attrs)
+    return sorted(lsdb, key=lambda attrs: attrs.get("dn", "").lower())
+
+
+class OSPFNeighborDetails(tk.Toplevel):
+    def __init__(self, master, session, row):
+        super().__init__(master)
+        self.session, self.row = session, row
+        self.title(f"OSPF neighbor {row['neighbor']} - node {row['node']} / {row['vrf']}")
+        self.geometry(DEFAULT_WINDOW_SIZE)
+        self.transient(master)
+        self.results = queue.Queue()
+
+        tabs = ttk.Notebook(self)
+        tabs.pack(fill="both", expand=True)
+        details = ttk.Frame(tabs, padding=8)
+        tabs.add(details, text="Neighbor")
+        text = tk.Text(details, wrap="none", font=("Menlo", 11), state="normal")
+        ysb = ttk.Scrollbar(details, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=ysb.set)
+        ysb.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        for key, value in sorted(row["details"].get("ospfAdjEp", {}).items()):
+            text.insert("end", f"{key:<24} {value}\n")
+        text.configure(state="disabled")
+
+        lsdb_frame = ttk.Frame(tabs, padding=8)
+        tabs.add(lsdb_frame, text="LSDB (ospfDb)")
+        self.status = tk.StringVar(value="Loading OSPF LSDB...")
+        ttk.Label(lsdb_frame, textvariable=self.status).pack(anchor="w", pady=(0, 6))
+        table_frame = ttk.Frame(lsdb_frame)
+        table_frame.pack(fill="both", expand=True)
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(table_frame, show="headings")
+        ysb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        xsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+
+        def worker():
+            try:
+                self.results.put((True, get_ospf_lsdb(session, row)))
+            except Exception as exc:
+                self.results.put((False, exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _poll(self):
+        if not self.winfo_exists():
+            return
+        try:
+            ok, value = self.results.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll)
+            return
+        if not ok:
+            self.status.set("OSPF LSDB retrieval failed")
+            messagebox.showerror("OSPF LSDB", f"Could not retrieve OSPF LSDB:\n{value}", parent=self)
+            return
+        if not value:
+            self.status.set("No LSDB entries found for this node, VRF, and area.")
+            return
+        columns = sorted({key for entry in value for key in entry}, key=lambda key: (key != "dn", key.lower()))
+        self.tree.configure(columns=columns, displaycolumns=columns)
+        for key in columns:
+            self.tree.heading(key, text=key)
+            width = 420 if key == "dn" else min(max(len(key) * 9, 110), 240)
+            self.tree.column(key, width=width, minwidth=80, stretch=key != "dn")
+        for entry in value:
+            self.tree.insert("", "end", values=[entry.get(key, "") for key in columns])
+        self.status.set(f"{len(value)} LSDB entries from ospfDb for node {self.row['node']}, "
+                        f"VRF {self.row['vrf']}, area {self.row['area']}")
+
+
 BGP_ROUTE_COLUMNS = (
     ("status", "Status", 60), ("path_selection", "Selection", 70),
     ("route_source", "Source", 60), ("prefix", "Prefix", 180),
@@ -3144,6 +3253,9 @@ class ARTApp(tk.Tk):
         self._open_details(row, self._view)
 
     def _open_details(self, row, view):
+        if view == "ospf":
+            OSPFNeighborDetails(self, self.apic_session, row)
+            return
         win = tk.Toplevel(self)
         win.title(VIEWS[view]["detail_title"](row))
         win.geometry(DEFAULT_WINDOW_SIZE)

@@ -11,7 +11,7 @@ version 0.2
 - allowing the app to work without `config.yaml` and add possibility to enter APIC IP manually
 
 version 0.3 (current)
-- added iping utility for troubleshooting
+- added `iping` utility for troubleshooting
 - implemented compare picker, where only tenant and vrf matched compare files are shown and their dates
 - OSPF neighbors option
 - highlight state change within the last 24h for BGP and OSPF

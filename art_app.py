@@ -781,9 +781,13 @@ def get_iping_choices(session):
 
 
 def build_leaf_troubleshoot_command(operation, vrf, destination, source=""):
-    """Build a validated VRF-scoped iping or itraceroute command."""
+    """Build a validated device-only or VRF-scoped troubleshooting command."""
+    if operation == "show vrf":
+        return "show vrf"
+    if operation == "show interface status":
+        return "show interface status"
     if operation not in ("iping", "itraceroute"):
-        raise ValueError("Select iping or itraceroute.")
+        raise ValueError("Select a supported troubleshooting command.")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
         raise ValueError("The VRF name contains unsupported CLI characters.")
     try:
@@ -1368,6 +1372,7 @@ class MainipingWindow(tk.Toplevel):
         self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
         self.leaves = []
         self.vrfs = []
+        self.choices_loaded = False
 
         form = ttk.Frame(self, padding=10)
         form.pack(fill="x")
@@ -1375,21 +1380,27 @@ class MainipingWindow(tk.Toplevel):
         ttk.Label(form, text="Operation:").grid(row=0, column=0, sticky="w", pady=3)
         self.operation_var = tk.StringVar(value="iping")
         self.operation_combo = ttk.Combobox(
-            form, state="readonly", textvariable=self.operation_var, values=("iping", "itraceroute"))
+            form, state="readonly", textvariable=self.operation_var,
+            values=("iping", "itraceroute", "show vrf", "show interface status"))
         self.operation_combo.grid(row=0, column=1, sticky="ew", pady=3)
         self.operation_combo.bind("<<ComboboxSelected>>", self._update_action_label)
         ttk.Label(form, text="Leaf:").grid(row=1, column=0, sticky="w", pady=3)
         self.leaf_combo = ttk.Combobox(form, state="disabled")
         self.leaf_combo.grid(row=1, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="VRF:").grid(row=2, column=0, sticky="w", pady=3)
+        self.vrf_label = ttk.Label(form, text="VRF:")
+        self.vrf_label.grid(row=2, column=0, sticky="w", pady=3)
         self.vrf_combo = ttk.Combobox(form, state="disabled")
         self.vrf_combo.grid(row=2, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="Destination IP:").grid(row=3, column=0, sticky="w", pady=3)
+        self.destination_label = ttk.Label(form, text="Destination IP:")
+        self.destination_label.grid(row=3, column=0, sticky="w", pady=3)
         self.destination_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.destination_var).grid(row=3, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="Source IP (optional):").grid(row=4, column=0, sticky="w", pady=3)
+        self.destination_entry = ttk.Entry(form, textvariable=self.destination_var)
+        self.destination_entry.grid(row=3, column=1, sticky="ew", pady=3)
+        self.source_label = ttk.Label(form, text="Source IP (optional):")
+        self.source_label.grid(row=4, column=0, sticky="w", pady=3)
         self.source_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.source_var).grid(row=4, column=1, sticky="ew", pady=3)
+        self.source_entry = ttk.Entry(form, textvariable=self.source_var)
+        self.source_entry.grid(row=4, column=1, sticky="ew", pady=3)
         ttk.Label(form, text="SSH username:").grid(row=5, column=0, sticky="w", pady=3)
         self.username_var = tk.StringVar(value=app.ssh_username or app.username or "")
         app.bind_ssh_credential_vars(self.username_var, None)
@@ -1402,8 +1413,9 @@ class MainipingWindow(tk.Toplevel):
         password_entry.bind("<Return>", lambda _event: self.run())
         self.run_btn = ttk.Button(form, text="Run iping", command=self.run, state="disabled")
         self.run_btn.grid(row=7, column=1, sticky="e", pady=(6, 3))
+        self._update_action_label()
 
-        self.status = tk.StringVar(value="Loading available leaves and VRFs...")
+        self.status = tk.StringVar(value="Loading available leaves...")
         ttk.Label(self, textvariable=self.status, padding=(10, 0), wraplength=720).pack(anchor="w", pady=(0, 6))
         output_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
         output_frame.pack(fill="both", expand=True)
@@ -1427,7 +1439,25 @@ class MainipingWindow(tk.Toplevel):
         self.after(100, self._poll)
 
     def _update_action_label(self, _event=None):
-        self.run_btn.configure(text=f"Run {self.operation_var.get()}")
+        operation = self.operation_var.get()
+        device_only = operation in ("show vrf", "show interface status")
+        fields = (self.vrf_label, self.vrf_combo, self.destination_label,
+                  self.destination_entry, self.source_label, self.source_entry)
+        for field in fields:
+            if device_only:
+                field.grid_remove()
+            else:
+                field.grid()
+        self.run_btn.configure(text=f"Run {operation}")
+        if self.choices_loaded and not self.fetching:
+            can_run = bool(self.leaves) and (device_only or bool(self.vrfs))
+            self.run_btn.configure(state="normal" if can_run else "disabled")
+            if not self.leaves:
+                self.status.set("No leaves with OOB addresses found on this APIC.")
+            elif not can_run:
+                self.status.set("No VRFs found on this APIC.")
+            else:
+                self.status.set(f"Choose a leaf, then run {operation}.")
 
     def run(self):
         if self.run_btn.instate(["disabled"]):
@@ -1435,17 +1465,25 @@ class MainipingWindow(tk.Toplevel):
         if self.session is None or self.session is not self.app.apic_session:
             messagebox.showwarning("iping", "Reconnect to the APIC before running iping.", parent=self)
             return
-        leaf_index, vrf_index = self.leaf_combo.current(), self.vrf_combo.current()
-        if not (0 <= leaf_index < len(self.leaves) and 0 <= vrf_index < len(self.vrfs)):
-            messagebox.showwarning("iping", "Select a leaf and VRF.", parent=self)
+        operation = self.operation_var.get()
+        leaf_index = self.leaf_combo.current()
+        if not 0 <= leaf_index < len(self.leaves):
+            messagebox.showwarning("Troubleshoot", "Select a leaf.", parent=self)
             return
+        if operation in ("iping", "itraceroute"):
+            vrf_index = self.vrf_combo.current()
+            if not 0 <= vrf_index < len(self.vrfs):
+                messagebox.showwarning("Troubleshoot", "Select a VRF.", parent=self)
+                return
+            vrf = self.vrfs[vrf_index]["domain"]
+            destination, source = self.destination_var.get(), self.source_var.get()
+        else:
+            vrf, destination, source = "", "", ""
         username, password = self.username_var.get().strip(), self.password_var.get()
         if not username or not password:
-            messagebox.showwarning("iping", "Enter the leaf SSH username and password.", parent=self)
+            messagebox.showwarning("Troubleshoot", "Enter the leaf SSH username and password.", parent=self)
             return
-        leaf, vrf = self.leaves[leaf_index], self.vrfs[vrf_index]["domain"]
-        destination, source = self.destination_var.get(), self.source_var.get()
-        operation = self.operation_var.get()
+        leaf = self.leaves[leaf_index]
         try:
             build_leaf_troubleshoot_command(operation, vrf, destination, source)
         except ValueError as exc:
@@ -1456,8 +1494,11 @@ class MainipingWindow(tk.Toplevel):
             self.password_var.set("")
         self.run_btn.configure(state="disabled")
         self.operation_combo.configure(state="disabled")
-        self.status.set(f"Connecting to {leaf['label']} and running {operation} in "
-                        f"{self.vrfs[vrf_index]['label']}...")
+        if operation in ("iping", "itraceroute"):
+            self.status.set(f"Connecting to {leaf['label']} and running {operation} in "
+                            f"{self.vrfs[vrf_index]['label']}...")
+        else:
+            self.status.set(f"Connecting to {leaf['label']} and running {operation}...")
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
@@ -1516,9 +1557,10 @@ class MainipingWindow(tk.Toplevel):
                 self.status.set("APIC session changed. Close this window and reconnect.")
                 return
             if not ok:
-                self.status.set(f"Could not load leaves and VRFs: {value}")
+                self.status.set(f"Could not load troubleshoot targets: {value}")
                 return
             self.leaves, self.vrfs = value
+            self.choices_loaded = True
             self.leaf_combo["values"] = [leaf["label"] for leaf in self.leaves]
             self.vrf_combo["values"] = [vrf["label"] for vrf in self.vrfs]
             if self.leaves:
@@ -1527,12 +1569,7 @@ class MainipingWindow(tk.Toplevel):
             if self.vrfs:
                 self.vrf_combo.current(0)
                 self.vrf_combo.configure(state="readonly")
-            if self.leaves and self.vrfs:
-                self.run_btn.configure(state="normal")
-                self.status.set("Choose a leaf and VRF, enter the destination IP, then select an operation.")
-            else:
-                missing = "leaves with OOB addresses" if not self.leaves else "VRFs"
-                self.status.set(f"No {missing} found on this APIC.")
+            self._update_action_label()
         else:
             self.run_btn.configure(state="normal")
             self.operation_combo.configure(state="readonly")
@@ -2725,7 +2762,7 @@ VIEWS = {
            "Not deployed": lambda r: r["nodes"] == 0,
     },
     "tag": lambda r: "" if r["nodes"] else "muted",
-    " summary": lambda rows: (f"{sum(r['l3outs'] > 0 for r in rows)} with L3Outs, "
+    "summary": lambda rows: (f"{sum(r['l3outs'] > 0 for r in rows)} with L3Outs, "
                                 f"{sum(r['l3outs'] for r in rows)} L3Outs, "
                                 f"{sum(r['routes_v4'] + r['routes_v6'] for r in rows)} routes on all switches"),
     "detail_title": lambda r: f"VRF {r['tenant']}:{r['vrf']}",

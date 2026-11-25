@@ -10,7 +10,7 @@ ART is a desktop application written in python tkinter for inspecting Cisco ACI 
 - Retrieve a VRF routing table, export it to CSV, and compare it with a saved snapshot.
 - List L3Outs and inspect their profiles, interfaces, peers, External EPGs, and route-control policies.
 - Retrieve BGP neighbor details and received or advertised routes from a leaf over SSH, in raw or parsed form.
-- Run VRF-scoped `iping` or `itraceroute` commands from the main-menu Troubleshoot utility.
+- Run `iping`, `itraceroute`, `show vrf`, or `show interface status` from the main-menu Troubleshoot utility.
 - Export parsed BGP tables to CSV and compare them with saved tables.
 - Filter and sort result lists, and refresh APIC authentication tokens while logged in.
 
@@ -75,7 +75,7 @@ settings:
 ## Using the application
 
 1. Select an APIC, enter credentials if they were not loaded from the config, and choose **Login**.
-2. Select **Get VRFs**, **Get L3Out**, **Get BGP peers**, or **Get OSPF neighbors** to retrieve that view. Use the filter, quick-filter, and sort controls above the results. Choose **Troubleshoot** from the main menu to run `iping` or `itraceroute` from a selected leaf in a chosen VRF.
+2. Select **Get VRFs**, **Get L3Out**, **Get BGP peers**, or **Get OSPF neighbors** to retrieve that view. Use the filter, quick-filter, and sort controls above the results. Choose **Troubleshoot** from the main menu to run `iping` or `itraceroute` in a selected leaf's VRF, or `show vrf` / `show interface status` on the selected leaf without entering a VRF or IP addresses.
 3. Double-click a result to open its details. In the VRF routing-table tab, double-click a route to open the remote lookup; use **Reload devices** to re-read its configured SSH hosts from `config.yaml`. OSPF neighbor details include `ospfLsaRec` LSAs retrieved as children of `ospfDb`; BGP peer details include SSH tabs for neighbor information, received routes, and advertised routes.
 4. For SSH retrieval, enter credentials accepted by the leaf. The first connection to an unknown SSH host key asks for confirmation. Independently verify the displayed fingerprint before accepting; accepted keys are saved in `~/.ssh/known_hosts`. A changed key is blocked.
 5. Parsed routing tables and BGP routes can be exported to CSV and compared with a prior export. Exports are written under `routing_tables/` or `bgp_tables/` beside `art_app.py`. Raw BGP output is displayed but is not available for CSV export or comparison.

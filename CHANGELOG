@@ -13,6 +13,7 @@ version 0.2
 version 0.3 (current)
 - added `iping` utility for troubleshooting
 - renamed the main-menu `iping` utility to Troubleshoot and added `itraceroute`
+- added device-only `show vrf` and `show interface status` commands to Troubleshoot
 - implemented compare picker, where only tenant and vrf matched compare files are shown and their dates
 - OSPF neighbors option
 - highlight state change within the last 24h for BGP and OSPF

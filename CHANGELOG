@@ -11,13 +11,12 @@ version 0.2
 - allowing the app to work without `config.yaml` and add possibility to enter APIC IP manually
 
 version 0.3 (current)
-- added troubleshoting utilities
-- renamed the main-menu `iping` utility to Troubleshoot and added `itraceroute`
-- added device-only `show vrf` and `show interface status` commands to Troubleshoot
+- added troubleshoting utilities like iping, itraceroute and few more commands
 - implemented compare picker, where only tenant and vrf matched compare files are shown and their dates
-- OSPF neighbors option
+- OSPF neighbors option (experimental)
 - highlight state change within the last 24h for BGP and OSPF
 - option to store and reuse APIC password for SSH usage
+- handle explicit zero-route responses when retrieving parsed BGP received and advertised routes
 - Separate tab under L3Out for associated contracts and from there details of contracts (consumer/provider)
 - remote route lookup. option to pick a route from a routing table and check it on the far end of the network via SSH 
 

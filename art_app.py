@@ -508,6 +508,18 @@ def normalize_bgp_routes(parsed):
     return rows
 
 
+def is_empty_bgp_routes_output(output):
+    if not isinstance(output, str):
+        return False
+    empty_route_line = re.compile(
+        r"\s*(?:(?:%\s*)?no\s+(?:bgp\s+)?(?:prefix(?:es)?|routes?)(?:\b.*)?|"
+        r"there\s+are\s+no\s+(?:prefix(?:es)?|routes?)(?:\b.*)?|"
+        r"total\s+number\s+of\s+prefixes\s*[:=]?\s*0)\s*",
+        re.IGNORECASE,
+    )
+    return any(empty_route_line.fullmatch(line) for line in output.splitlines())
+
+
 def read_bgp_routes_csv(path):
     required = [col[0] for col in BGP_ROUTE_COLUMNS]
     with open(path, newline="", encoding="utf-8-sig") as source:
@@ -569,6 +581,20 @@ def build_bgp_diff(saved, current, saved_name="Saved CSV"):
         return output.getvalue().splitlines(keepends=True)
 
     return "".join(unified_diff(lines(saved), lines(current), fromfile=saved_name, tofile="Current BGP table"))
+
+
+def build_routes_diff(saved, current, saved_name="Saved CSV"):
+    keys = [col[0] for col in ROUTE_COLUMNS]
+
+    def lines(rows):
+        output = StringIO(newline="")
+        writer = csv.DictWriter(output, fieldnames=keys, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(sorted(rows, key=lambda row: tuple(row[key] for key in keys)))
+        return output.getvalue().splitlines(keepends=True)
+
+    return "".join(unified_diff(lines(saved), lines(current), fromfile=saved_name,
+                                tofile="Current routing table"))
 
 
 def verify_ssh_host_key(host, confirm_key=None, known_hosts_path=None):
@@ -665,8 +691,21 @@ def get_bgp_received_routes(session, row, username, password, advertised=False, 
     with ConnectHandler(device_type="cisco_nxos", host=str(host), username=username, password=password,
                         ssh_strict=True, system_host_keys=True, conn_timeout=REQUEST_TIMEOUT,
                         auth_timeout=REQUEST_TIMEOUT, banner_timeout=REQUEST_TIMEOUT) as connection:
-        output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
-                                         strip_prompt=True, strip_command=True, **parse_options)
+        try:
+            output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
+                                             strip_prompt=True, strip_command=True, **parse_options)
+        except ValueError as exc:
+            error_text = str(exc).lower()
+            if not parsed or neighbor_info or "textfsm" not in error_text or "parse" not in error_text:
+                raise
+            raw_output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
+                                                 strip_prompt=True, strip_command=True, use_textfsm=False)
+            if is_empty_bgp_routes_output(raw_output):
+                output = []
+            else:
+                raise
+    if parsed and is_empty_bgp_routes_output(output):
+        output = []
     return str(host), command, normalize_bgp_routes(output) if parsed else output
 
 
@@ -786,6 +825,8 @@ def build_leaf_troubleshoot_command(operation, vrf, destination, source=""):
         return "show vrf"
     if operation == "show interface status":
         return "show interface status"
+    if operation == "show interface description":
+        return "show interface description"
     if operation not in ("iping", "itraceroute"):
         raise ValueError("Select a supported troubleshooting command.")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
@@ -1382,7 +1423,8 @@ class MainipingWindow(tk.Toplevel):
         self.operation_var = tk.StringVar(value="iping")
         self.operation_combo = ttk.Combobox(
             form, state="readonly", textvariable=self.operation_var,
-            values=("iping", "itraceroute", "show vrf", "show interface status"))
+            values=("iping", "itraceroute", "show vrf", "show interface status",
+                    "show interface description"))
         self.operation_combo.grid(row=0, column=1, sticky="ew", pady=3)
         self.operation_combo.bind("<<ComboboxSelected>>", self._update_action_label)
         ttk.Label(form, text="Leaf:").grid(row=1, column=0, sticky="w", pady=3)
@@ -1441,7 +1483,7 @@ class MainipingWindow(tk.Toplevel):
 
     def _update_action_label(self, _event=None):
         operation = self.operation_var.get()
-        device_only = operation in ("show vrf", "show interface status")
+        device_only = operation in ("show vrf", "show interface status", "show interface description")
         fields = (self.vrf_label, self.vrf_combo, self.destination_label,
                   self.destination_entry, self.source_label, self.source_entry)
         for field in fields:
@@ -2546,13 +2588,54 @@ class RoutingTable(ttk.Frame):
         ttk.Label(win, text=f"{counts['Added']} added / {counts['Removed']} removed / "
                            f"{counts['Changed (current)']} changed routes",
                   padding=8).pack(anchor="w")
+        explanation = ttk.Label(
+            win, justify="left", wraplength=1150, padding=(8, 0, 8, 8),
+            text="Baseline: selected CSV. Current: last retrieved table, not a live refresh.\n"
+                 "Added: only in current. Removed: only in saved. Changed: a route's attributes differ; "
+                 "'Changed (saved)' and 'Changed (current)' show before and after.\n"
+                 "Diff: red '-' lines are saved values; green '+' lines are current values. "
+                 "A modified route appears as a removal followed by an addition.\n"
+                 "Counts refer to routes, not next hops; row order is ignored. "
+                 "Choose a CSV for the same tenant and VRF.")
+        explanation.pack(fill="x")
+        win.bind("<Configure>", lambda event: explanation.configure(wraplength=max(800, event.width - 32))
+                 if event.widget is win else None)
+        tabs = ttk.Notebook(win)
+        tabs.pack(fill="both", expand=True)
+        changes_page = ttk.Frame(tabs)
+        diff_page = ttk.Frame(tabs)
+        tabs.add(changes_page, text="Changes")
+        tabs.add(diff_page, text="Diff")
         columns = (("change", "Change", 150),) + ROUTE_COLUMNS
-        tree = build_route_tree(win, columns)
+        tree = build_route_tree(changes_page, columns)
         tree.tag_configure("Added", foreground="#1e8e3e")
         tree.tag_configure("Removed", foreground="#d93025")
         tree.tag_configure("Changed (saved)", foreground="#777777")
         for row in changes:
             tree.insert("", "end", values=[row[col[0]] for col in columns], tags=(row["change"],))
+        diff_page.columnconfigure(0, weight=1)
+        diff_page.rowconfigure(0, weight=1)
+        text = tk.Text(diff_page, wrap="none", font=("Menlo", 11))
+        ysb = ttk.Scrollbar(diff_page, orient="vertical", command=text.yview)
+        xsb = ttk.Scrollbar(diff_page, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+        text.tag_configure("added", foreground="#17632d", background="#e6f4ea")
+        text.tag_configure("removed", foreground="#a61c1c", background="#fce8e6")
+        text.tag_configure("header", foreground="#555555")
+        for line in build_routes_diff(saved, self.rows, Path(path).name).splitlines(keepends=True):
+            if line.startswith(("---", "+++", "@@")):
+                tag = "header"
+            elif line.startswith("+"):
+                tag = "added"
+            elif line.startswith("-"):
+                tag = "removed"
+            else:
+                tag = ""
+            text.insert("end", line, (tag,) if tag else ())
+        text.configure(state="disabled")
 
 
 class RouteLookupWindow(tk.Toplevel):

@@ -1373,6 +1373,7 @@ class MainipingWindow(tk.Toplevel):
         self.leaves = []
         self.vrfs = []
         self.choices_loaded = False
+        self.fetching = False
 
         form = ttk.Frame(self, padding=10)
         form.pack(fill="x")
@@ -1494,6 +1495,7 @@ class MainipingWindow(tk.Toplevel):
             self.password_var.set("")
         self.run_btn.configure(state="disabled")
         self.operation_combo.configure(state="disabled")
+        self.fetching = True
         if operation in ("iping", "itraceroute"):
             self.status.set(f"Connecting to {leaf['label']} and running {operation} in "
                             f"{self.vrfs[vrf_index]['label']}...")
@@ -1571,6 +1573,7 @@ class MainipingWindow(tk.Toplevel):
                 self.vrf_combo.configure(state="readonly")
             self._update_action_label()
         else:
+            self.fetching = False
             self.run_btn.configure(state="normal")
             self.operation_combo.configure(state="readonly")
             if self.session is not self.app.apic_session:

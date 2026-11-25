@@ -578,8 +578,9 @@ def build_bgp_diff(saved, current, saved_name="Saved CSV"):
         output = StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=keys, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(sorted(rows, key=lambda row: (row["prefix"], row["next_hop"],
-                                                     tuple(row[key] for key in keys))))
+        ordered = sorted(rows, key=lambda row: (row["prefix"], row["next_hop"],
+                                                tuple(row[key] for key in keys)))
+        writer.writerows({key: row[key] for key in keys} for row in ordered)
         return output.getvalue().splitlines(keepends=True)
 
     return "".join(unified_diff(lines(saved), lines(current), fromfile=saved_name, tofile="Current BGP table"))
@@ -592,7 +593,8 @@ def build_routes_diff(saved, current, saved_name="Saved CSV"):
         output = StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=keys, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(sorted(rows, key=lambda row: tuple(row[key] for key in keys)))
+        ordered = sorted(rows, key=lambda row: tuple(row[key] for key in keys))
+        writer.writerows({key: row[key] for key in keys} for row in ordered)
         return output.getvalue().splitlines(keepends=True)
 
     return "".join(unified_diff(lines(saved), lines(current), fromfile=saved_name,

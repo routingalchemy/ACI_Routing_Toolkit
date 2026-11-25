@@ -520,7 +520,7 @@ def is_empty_bgp_routes_output(output):
     return any(empty_route_line.fullmatch(line) for line in output.splitlines())
 
 
-def read_bgp_routes_csv(path):
+def read_bgp_routes_csv(path, include_line_numbers=False):
     required = [col[0] for col in BGP_ROUTE_COLUMNS]
     with open(path, newline="", encoding="utf-8-sig") as source:
         reader = csv.DictReader(source, strict=True)
@@ -537,6 +537,8 @@ def read_bgp_routes_csv(path):
             if "/" not in prefix:
                 raise ValueError(f"Missing prefix length at line {reader.line_num}.")
             row["prefix"] = str(ip_interface(prefix).network)
+            if include_line_numbers:
+                row["_saved_csv_line"] = reader.line_num
             rows.append(row)
     return rows
 
@@ -1217,7 +1219,7 @@ class BGPReceivedRoutes(ttk.Frame):
         if not path:
             return
         try:
-            saved = read_bgp_routes_csv(path)
+            saved = read_bgp_routes_csv(path, include_line_numbers=True)
             changes = compare_routing_tables(saved, self.rows, columns=BGP_ROUTE_COLUMNS, identity="prefix")
         except (OSError, UnicodeError, csv.Error, ValueError) as exc:
             messagebox.showerror("Compare BGP tables", f"Could not compare BGP tables:\n{exc}", parent=self)
@@ -1237,7 +1239,8 @@ class BGPReceivedRoutes(ttk.Frame):
             win, justify="left", wraplength=1150, padding=(8, 0, 8, 8),
             text="Baseline: selected CSV. Current: last retrieved table, not a live refresh.\n"
                  "Added: only in current. Removed: only in saved. Changed: a path or attribute differs; "
-                 "'Changed (saved)' and 'Changed (current)' show before and after.\n"
+                 "'Changed (saved)' and 'Changed (current)' show before and after. Saved CSV line is shown "
+                 "for saved rows; current-only rows have no saved-file line.\n"
                  "Diff: red '-' lines are saved values; green '+' lines are current values. "
                  "A modified row appears as a removal followed by an addition.\n"
                  "Counts refer to prefixes, not paths; row order is ignored. "
@@ -1251,13 +1254,15 @@ class BGPReceivedRoutes(ttk.Frame):
         diff_page = ttk.Frame(tabs)
         tabs.add(changes_page, text="Changes")
         tabs.add(diff_page, text="Diff")
-        columns = (("change", "Change", 150),) + BGP_ROUTE_COLUMNS
+        columns = (("change", "Change", 150), ("saved_csv_line", "Saved CSV line", 115)) + BGP_ROUTE_COLUMNS
         tree = build_route_tree(changes_page, columns)
         tree.tag_configure("Added", foreground="#1e8e3e")
         tree.tag_configure("Removed", foreground="#d93025")
         tree.tag_configure("Changed (saved)", foreground="#777777")
         for row in changes:
-            tree.insert("", "end", values=[row[col[0]] for col in columns], tags=(row["change"],))
+            values = [row["change"], row.get("_saved_csv_line", "")]
+            values.extend(row[col[0]] for col in BGP_ROUTE_COLUMNS)
+            tree.insert("", "end", values=values, tags=(row["change"],))
         diff_page.columnconfigure(0, weight=1)
         diff_page.rowconfigure(0, weight=1)
         text = tk.Text(diff_page, wrap="none", font=("Menlo", 11))
@@ -2252,7 +2257,7 @@ def write_routes_csv(path, tenant, vrf, rows):
             writer.writerow({"tenant": tenant, "vrf": vrf, **row})
 
 
-def read_routes_csv(path, tenant, vrf):
+def read_routes_csv(path, tenant, vrf, include_line_numbers=False):
     required = ["tenant", "vrf"] + [col[0] for col in ROUTE_COLUMNS]
     with open(path, newline="", encoding="utf-8-sig") as source:
         reader = csv.DictReader(source, strict=True)
@@ -2268,7 +2273,10 @@ def read_routes_csv(path, tenant, vrf):
                 raise ValueError(f"The saved table does not belong to VRF {tenant}:{vrf}.")
             if not row["dn"]:
                 raise ValueError(f"Missing route DN at line {reader.line_num}.")
-            rows.append({col[0]: row[col[0]] for col in ROUTE_COLUMNS})
+            route = {col[0]: row[col[0]] for col in ROUTE_COLUMNS}
+            if include_line_numbers:
+                route["_saved_csv_line"] = reader.line_num
+            rows.append(route)
     return rows
 
 
@@ -2572,7 +2580,7 @@ class RoutingTable(ttk.Frame):
         if not path:
             return
         try:
-            saved = read_routes_csv(path, self.tenant, self.vrf)
+            saved = read_routes_csv(path, self.tenant, self.vrf, include_line_numbers=True)
             changes = compare_routing_tables(saved, self.rows)
         except (OSError, UnicodeError, csv.Error, ValueError) as exc:
             messagebox.showerror("Compare routing tables", f"Could not compare routing tables:\n{exc}", parent=self)
@@ -2592,7 +2600,8 @@ class RoutingTable(ttk.Frame):
             win, justify="left", wraplength=1150, padding=(8, 0, 8, 8),
             text="Baseline: selected CSV. Current: last retrieved table, not a live refresh.\n"
                  "Added: only in current. Removed: only in saved. Changed: a route's attributes differ; "
-                 "'Changed (saved)' and 'Changed (current)' show before and after.\n"
+                 "'Changed (saved)' and 'Changed (current)' show before and after. Saved CSV line is shown "
+                 "for saved rows; current-only rows have no saved-file line.\n"
                  "Diff: red '-' lines are saved values; green '+' lines are current values. "
                  "A modified route appears as a removal followed by an addition.\n"
                  "Counts refer to routes, not next hops; row order is ignored. "
@@ -2606,13 +2615,15 @@ class RoutingTable(ttk.Frame):
         diff_page = ttk.Frame(tabs)
         tabs.add(changes_page, text="Changes")
         tabs.add(diff_page, text="Diff")
-        columns = (("change", "Change", 150),) + ROUTE_COLUMNS
+        columns = (("change", "Change", 150), ("saved_csv_line", "Saved CSV line", 115)) + ROUTE_COLUMNS
         tree = build_route_tree(changes_page, columns)
         tree.tag_configure("Added", foreground="#1e8e3e")
         tree.tag_configure("Removed", foreground="#d93025")
         tree.tag_configure("Changed (saved)", foreground="#777777")
         for row in changes:
-            tree.insert("", "end", values=[row[col[0]] for col in columns], tags=(row["change"],))
+            values = [row["change"], row.get("_saved_csv_line", "")]
+            values.extend(row[col[0]] for col in ROUTE_COLUMNS)
+            tree.insert("", "end", values=values, tags=(row["change"],))
         diff_page.columnconfigure(0, weight=1)
         diff_page.rowconfigure(0, weight=1)
         text = tk.Text(diff_page, wrap="none", font=("Menlo", 11))

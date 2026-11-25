@@ -12,8 +12,11 @@ version 0.2
 
 version 0.3 (current)
 - added `iping` utility for troubleshooting
+- renamed the main-menu `iping` utility to Troubleshoot and added `itraceroute`
 - implemented compare picker, where only tenant and vrf matched compare files are shown and their dates
 - OSPF neighbors option
 - highlight state change within the last 24h for BGP and OSPF
 - option to store and reuse APIC password for SSH usage
 - Separate tab under L3Out for associated contracts and from there details of contracts (consumer/provider)
+- remote route lookup. option to pick a route from a routing table and check it on the far end of the network via SSH 
+

@@ -780,8 +780,10 @@ def get_iping_choices(session):
     return leaves, vrfs
 
 
-def run_leaf_iping(leaf, vrf, destination, source, username, password, confirm_key=None):
-    """Run one validated, VRF-scoped iping command over SSH to a selected leaf."""
+def build_leaf_troubleshoot_command(operation, vrf, destination, source=""):
+    """Build a validated VRF-scoped iping or itraceroute command."""
+    if operation not in ("iping", "itraceroute"):
+        raise ValueError("Select iping or itraceroute.")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", vrf):
         raise ValueError("The VRF name contains unsupported CLI characters.")
     try:
@@ -796,15 +798,21 @@ def run_leaf_iping(leaf, vrf, destination, source, username, password, confirm_k
             raise ValueError("Enter a valid source IP address or leave it blank.") from exc
         if source_ip.version != destination_ip.version:
             raise ValueError("The source and destination IP address families must match.")
-    try:
-        from netmiko import ConnectHandler
-    except ImportError as exc:
-        raise RuntimeError("iping requires Netmiko. Install the ART requirements in your Python environment.") from exc
 
-    command = f"iping -V {vrf}"
+    command = f"{operation} -V {vrf}"
     if source_ip:
         command += f" -S {source_ip}"
     command += f" {destination_ip}"
+    return command
+
+
+def run_leaf_troubleshoot(leaf, vrf, destination, source, operation, username, password, confirm_key=None):
+    """Run one validated VRF-scoped troubleshooting command over SSH to a leaf."""
+    command = build_leaf_troubleshoot_command(operation, vrf, destination, source)
+    try:
+        from netmiko import ConnectHandler
+    except ImportError as exc:
+        raise RuntimeError("Troubleshooting requires Netmiko. Install the ART requirements.") from exc
     verify_ssh_host_key(leaf["host"], confirm_key)
     with ConnectHandler(device_type="cisco_nxos", host=leaf["host"], username=username, password=password,
                         ssh_strict=True, system_host_keys=True, conn_timeout=REQUEST_TIMEOUT,
@@ -812,6 +820,12 @@ def run_leaf_iping(leaf, vrf, destination, source, username, password, confirm_k
         output = connection.send_command(command, read_timeout=PAGED_TIMEOUT,
                                          strip_prompt=True, strip_command=True)
     return leaf["host"], command, output
+
+
+def run_leaf_iping(leaf, vrf, destination, source, username, password, confirm_key=None):
+    """Run one validated, VRF-scoped iping command over SSH to a selected leaf."""
+    return run_leaf_troubleshoot(
+        leaf, vrf, destination, source, "iping", username, password, confirm_key)
 
 
 class BGPReceivedRoutes(ttk.Frame):
@@ -1358,30 +1372,36 @@ class MainipingWindow(tk.Toplevel):
         form = ttk.Frame(self, padding=10)
         form.pack(fill="x")
         form.columnconfigure(1, weight=1)
-        ttk.Label(form, text="Leaf:").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Label(form, text="Operation:").grid(row=0, column=0, sticky="w", pady=3)
+        self.operation_var = tk.StringVar(value="iping")
+        self.operation_combo = ttk.Combobox(
+            form, state="readonly", textvariable=self.operation_var, values=("iping", "itraceroute"))
+        self.operation_combo.grid(row=0, column=1, sticky="ew", pady=3)
+        self.operation_combo.bind("<<ComboboxSelected>>", self._update_action_label)
+        ttk.Label(form, text="Leaf:").grid(row=1, column=0, sticky="w", pady=3)
         self.leaf_combo = ttk.Combobox(form, state="disabled")
-        self.leaf_combo.grid(row=0, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="VRF:").grid(row=1, column=0, sticky="w", pady=3)
+        self.leaf_combo.grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="VRF:").grid(row=2, column=0, sticky="w", pady=3)
         self.vrf_combo = ttk.Combobox(form, state="disabled")
-        self.vrf_combo.grid(row=1, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="Destination IP:").grid(row=2, column=0, sticky="w", pady=3)
+        self.vrf_combo.grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="Destination IP:").grid(row=3, column=0, sticky="w", pady=3)
         self.destination_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.destination_var).grid(row=2, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="Source IP (optional):").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Entry(form, textvariable=self.destination_var).grid(row=3, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="Source IP (optional):").grid(row=4, column=0, sticky="w", pady=3)
         self.source_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.source_var).grid(row=3, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="SSH username:").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Entry(form, textvariable=self.source_var).grid(row=4, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="SSH username:").grid(row=5, column=0, sticky="w", pady=3)
         self.username_var = tk.StringVar(value=app.ssh_username or app.username or "")
         app.bind_ssh_credential_vars(self.username_var, None)
-        ttk.Entry(form, textvariable=self.username_var).grid(row=4, column=1, sticky="ew", pady=3)
-        ttk.Label(form, text="SSH password:").grid(row=5, column=0, sticky="w", pady=3)
+        ttk.Entry(form, textvariable=self.username_var).grid(row=5, column=1, sticky="ew", pady=3)
+        ttk.Label(form, text="SSH password:").grid(row=6, column=0, sticky="w", pady=3)
         self.password_var = tk.StringVar(value=app.ssh_password)
         app.bind_ssh_credential_vars(None, self.password_var)
         password_entry = ttk.Entry(form, textvariable=self.password_var, show="*")
-        password_entry.grid(row=5, column=1, sticky="ew", pady=3)
+        password_entry.grid(row=6, column=1, sticky="ew", pady=3)
         password_entry.bind("<Return>", lambda _event: self.run())
-        self.run_btn = ttk.Button(form, text="iping", command=self.run, state="disabled")
-        self.run_btn.grid(row=6, column=1, sticky="e", pady=(6, 3))
+        self.run_btn = ttk.Button(form, text="Run iping", command=self.run, state="disabled")
+        self.run_btn.grid(row=7, column=1, sticky="e", pady=(6, 3))
 
         self.status = tk.StringVar(value="Loading available leaves and VRFs...")
         ttk.Label(self, textvariable=self.status, padding=(10, 0), wraplength=720).pack(anchor="w", pady=(0, 6))
@@ -1406,6 +1426,9 @@ class MainipingWindow(tk.Toplevel):
         threading.Thread(target=worker, daemon=True).start()
         self.after(100, self._poll)
 
+    def _update_action_label(self, _event=None):
+        self.run_btn.configure(text=f"Run {self.operation_var.get()}")
+
     def run(self):
         if self.run_btn.instate(["disabled"]):
             return
@@ -1422,19 +1445,28 @@ class MainipingWindow(tk.Toplevel):
             return
         leaf, vrf = self.leaves[leaf_index], self.vrfs[vrf_index]["domain"]
         destination, source = self.destination_var.get(), self.source_var.get()
+        operation = self.operation_var.get()
+        try:
+            build_leaf_troubleshoot_command(operation, vrf, destination, source)
+        except ValueError as exc:
+            messagebox.showwarning("Troubleshoot", str(exc), parent=self)
+            return
         self.app.remember_ssh_credentials(username, password)
         if not self.app.remember_ssh_password:
             self.password_var.set("")
         self.run_btn.configure(state="disabled")
-        self.status.set(f"Connecting to {leaf['label']} and running iping in {self.vrfs[vrf_index]['label']}...")
+        self.operation_combo.configure(state="disabled")
+        self.status.set(f"Connecting to {leaf['label']} and running {operation} in "
+                        f"{self.vrfs[vrf_index]['label']}...")
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
 
         def worker():
             try:
-                result = run_leaf_iping(leaf, vrf, destination, source, username, password,
-                                        confirm_key=self._confirm_ssh_key)
+                result = run_leaf_troubleshoot(
+                    leaf, vrf, destination, source, operation, username, password,
+                    confirm_key=self._confirm_ssh_key)
                 self.results.put(("run", True, result))
             except Exception as exc:
                 self.results.put(("run", False, exc))
@@ -1497,18 +1529,19 @@ class MainipingWindow(tk.Toplevel):
                 self.vrf_combo.configure(state="readonly")
             if self.leaves and self.vrfs:
                 self.run_btn.configure(state="normal")
-                self.status.set("Choose a leaf and VRF, enter the destination IP, then run iping.")
+                self.status.set("Choose a leaf and VRF, enter the destination IP, then select an operation.")
             else:
                 missing = "leaves with OOB addresses" if not self.leaves else "VRFs"
                 self.status.set(f"No {missing} found on this APIC.")
         else:
             self.run_btn.configure(state="normal")
+            self.operation_combo.configure(state="readonly")
             if self.session is not self.app.apic_session:
-                self.status.set("APIC session changed. Reconnect before running iping.")
+                self.status.set("APIC session changed. Reconnect before running troubleshooting.")
                 return
             if not ok:
-                self.status.set("iping failed")
-                messagebox.showerror("iping", f"Could not run iping:\n{value}", parent=self)
+                self.status.set("Troubleshooting failed")
+                messagebox.showerror("Troubleshoot", f"Could not run command:\n{value}", parent=self)
                 return
             host, command, output = value
             self.status.set(f"{host} - {command}")
@@ -2492,17 +2525,20 @@ class RouteLookupWindow(tk.Toplevel):
         self.transient(master.winfo_toplevel())
         self.results = queue.Queue()
         self.fetching = False
+        self.devices = list(app.ssh_devices)
         self._closed = threading.Event()
         self.bind("<Destroy>", lambda event: self._closed.set() if event.widget is self else None)
 
         form = ttk.Frame(self, padding=10)
         form.pack(fill="x")
         ttk.Label(form, text="Remote device:").grid(row=0, column=0, sticky="w", pady=3)
-        device_names = [f"{device['name']} ({device['host']})" for device in app.ssh_devices]
+        device_names = [f"{device['name']} ({device['host']})" for device in self.devices]
         self.device_combo = ttk.Combobox(form, state="readonly", values=device_names, width=38)
         self.device_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=3)
         if device_names:
             self.device_combo.current(0)
+        self.reload_devices_btn = ttk.Button(form, text="Reload devices", command=self.reload_devices)
+        self.reload_devices_btn.grid(row=0, column=2, padx=6, pady=3)
         ttk.Label(form, text="SSH username:").grid(row=1, column=0, sticky="w", pady=3)
         self.username_var = tk.StringVar(value=app.ssh_username or app.username or "")
         app.bind_ssh_credential_vars(self.username_var, None)
@@ -2525,7 +2561,7 @@ class RouteLookupWindow(tk.Toplevel):
             row=5, column=0, columnspan=2, sticky="w", pady=3)
         self.retrieve_btn = ttk.Button(form, text="Check route", command=self.retrieve,
                                        state="normal" if device_names else "disabled")
-        self.retrieve_btn.grid(row=0, column=2, rowspan=2, padx=8)
+        self.retrieve_btn.grid(row=1, column=2, rowspan=2, padx=8)
         form.columnconfigure(1, weight=1)
 
         self.status = tk.StringVar(
@@ -2543,6 +2579,32 @@ class RouteLookupWindow(tk.Toplevel):
         ysb.grid(row=0, column=1, sticky="ns")
         xsb.grid(row=1, column=0, sticky="ew")
 
+    def reload_devices(self):
+        selected_index = self.device_combo.current()
+        selected_device = (self.devices[selected_index]
+                           if 0 <= selected_index < len(self.devices) else None)
+        try:
+            devices = load_ssh_devices()
+        except Exception as exc:
+            messagebox.showerror("Remote devices", f"Could not reload devices from {CONFIG_FILE}:\n{exc}",
+                                 parent=self)
+            return
+
+        self.devices = devices
+        self.app.ssh_devices = devices
+        names = [f"{device['name']} ({device['host']})" for device in devices]
+        self.device_combo.configure(values=names)
+        if selected_device in devices:
+            self.device_combo.current(devices.index(selected_device))
+        elif devices:
+            self.device_combo.current(0)
+        else:
+            self.device_combo.set("")
+        self.retrieve_btn.configure(state="normal" if devices else "disabled")
+        self.status.set(
+            f"Loaded {len(devices)} remote device(s) from {CONFIG_FILE.name}."
+            if devices else f"No remote devices configured in {CONFIG_FILE.name}.")
+
     def _confirm_ssh_key(self, host, key_type, fingerprint):
         request = {"host": host, "key_type": key_type, "fingerprint": fingerprint,
                    "approved": False, "done": threading.Event()}
@@ -2556,7 +2618,7 @@ class RouteLookupWindow(tk.Toplevel):
         if self.fetching:
             return
         index = self.device_combo.current()
-        if not 0 <= index < len(self.app.ssh_devices):
+        if not 0 <= index < len(self.devices):
             messagebox.showwarning("Route lookup", "Select a configured remote device.", parent=self)
             return
         username, password = self.username_var.get().strip(), self.password_var.get()
@@ -2574,9 +2636,10 @@ class RouteLookupWindow(tk.Toplevel):
             messagebox.showwarning("Route lookup", str(exc), parent=self)
             return
 
-        device = self.app.ssh_devices[index]
+        device = self.devices[index]
         self.fetching = True
         self.retrieve_btn.configure(state="disabled")
+        self.reload_devices_btn.configure(state="disabled")
         self.device_combo.configure(state="disabled")
         self.username_entry.configure(state="disabled")
         self.password_entry.configure(state="disabled")
@@ -2626,6 +2689,7 @@ class RouteLookupWindow(tk.Toplevel):
 
         self.fetching = False
         self.retrieve_btn.configure(state="normal")
+        self.reload_devices_btn.configure(state="normal")
         self.device_combo.configure(state="readonly")
         self.username_entry.configure(state="normal")
         self.password_entry.configure(state="normal")
@@ -2643,6 +2707,42 @@ class RouteLookupWindow(tk.Toplevel):
 
 
 VIEWS = {
+    "vrf": {
+    "title": "VRFs",
+    "fetch": get_vrfs,
+    "columns": (
+           ("tenant", "Tenant", 120, "text"), ("vrf", "VRF", 180, "text"),
+           ("l3outs", "L3Outs", 60, "num"),
+           ("nodes", "Switches", 70, "num"), ("routes_v4", "IPv4 routes", 85, "num"),
+           ("routes_v6", "IPv6 routes", 85, "num"), ("prefixes", "Unique pfx", 80, "num"),
+    ),
+    "stretch": ("vrf",),
+    "quick": {
+           "All": None,
+           "With L3Outs": lambda r: r["l3outs"] > 0,
+           "Without L3Outs": lambda r: r["l3outs"] == 0,
+           "Deployed": lambda r: r["nodes"] > 0,
+           "Not deployed": lambda r: r["nodes"] == 0,
+    },
+    "tag": lambda r: "" if r["nodes"] else "muted",
+    " summary": lambda rows: (f"{sum(r['l3outs'] > 0 for r in rows)} with L3Outs, "
+                                f"{sum(r['l3outs'] for r in rows)} L3Outs, "
+                                f"{sum(r['routes_v4'] + r['routes_v6'] for r in rows)} routes on all switches"),
+    "detail_title": lambda r: f"VRF {r['tenant']}:{r['vrf']}",
+    },
+    "l3out": {
+        "title": "L3Outs",
+        "fetch": get_l3outs,
+        "columns": (
+            ("tenant", "Tenant", 200, "text"), ("l3out", "L3Out", 300, "text"),
+            ("vrf", "VRF", 300, "text"),
+        ),
+        "stretch": ("tenant", "l3out", "vrf"),
+        "quick": {"All": None},
+        "tag": lambda row: "" if row["vrf"] else "muted",
+        "summary": lambda rows: f"{sum(not row['vrf'] for row in rows)} without a VRF",
+        "detail_title": lambda row: f"L3Out {row['tenant']}/{row['l3out']}",
+    },
     "bgp": {
         "title": "BGP peers",
         "fetch": get_bgp_peers,
@@ -2684,42 +2784,7 @@ VIEWS = {
                                  f"{sum(row['state'].lower() != 'full' for row in rows)} not Full"),
         "detail_title": lambda row: f"OSPF neighbor {row['neighbor']} - node {row['node']} / {row['vrf']}",
     },
-    "vrf": {
-        "title": "VRFs",
-        "fetch": get_vrfs,
-        "columns": (
-            ("tenant", "Tenant", 120, "text"), ("vrf", "VRF", 180, "text"),
-            ("l3outs", "L3Outs", 60, "num"),
-            ("nodes", "Switches", 70, "num"), ("routes_v4", "IPv4 routes", 85, "num"),
-            ("routes_v6", "IPv6 routes", 85, "num"), ("prefixes", "Unique pfx", 80, "num"),
-        ),
-        "stretch": ("vrf",),
-        "quick": {
-            "All": None,
-            "With L3Outs": lambda r: r["l3outs"] > 0,
-            "Without L3Outs": lambda r: r["l3outs"] == 0,
-            "Deployed": lambda r: r["nodes"] > 0,
-            "Not deployed": lambda r: r["nodes"] == 0,
-        },
-        "tag": lambda r: "" if r["nodes"] else "muted",
-        "summary": lambda rows: (f"{sum(r['l3outs'] > 0 for r in rows)} with L3Outs, "
-                                 f"{sum(r['l3outs'] for r in rows)} L3Outs, "
-                                 f"{sum(r['routes_v4'] + r['routes_v6'] for r in rows)} routes on all switches"),
-        "detail_title": lambda r: f"VRF {r['tenant']}:{r['vrf']}",
-    },
-    "l3out": {
-        "title": "L3Outs",
-        "fetch": get_l3outs,
-        "columns": (
-            ("tenant", "Tenant", 200, "text"), ("l3out", "L3Out", 300, "text"),
-            ("vrf", "VRF", 300, "text"),
-        ),
-        "stretch": ("tenant", "l3out", "vrf"),
-        "quick": {"All": None},
-        "tag": lambda row: "" if row["vrf"] else "muted",
-        "summary": lambda rows: f"{sum(not row['vrf'] for row in rows)} without a VRF",
-        "detail_title": lambda row: f"L3Out {row['tenant']}/{row['l3out']}",
-    },
+
 }
 
 
@@ -2809,7 +2874,7 @@ class ARTApp(tk.Tk):
         self.l3out_btn.pack(side="left")
         self.ospf_btn = ttk.Button(btns, text="Get OSPF neighbors", command=lambda: self.fetch("ospf"), state="disabled")
         self.ospf_btn.pack(side="left", padx=(6, 0))
-        self.iping_btn = ttk.Button(btns, text="iping", command=self.open_iping, state="disabled")
+        self.iping_btn = ttk.Button(btns, text="Troubleshoot", command=self.open_iping, state="disabled")
         self.iping_btn.pack(side="left", padx=(6, 0))
 
         status = ttk.Frame(frm)

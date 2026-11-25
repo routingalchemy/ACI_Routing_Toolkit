@@ -1,36 +1,44 @@
 # ACI Routing Toolkit (ART)
 
-ART is a desktop application for inspecting Cisco ACI routing and BGP information. It connects to APIC over the REST API and can optionally connect to leaf switches over SSH for BGP neighbor and route output.
+ART is a desktop application written in python tkinter for inspecting Cisco ACI routing. It connects to the APIC over the REST API and can optionally connect to leaf switches over SSH to get additional information.
 
 ## Features
 
-- List BGP peers and inspect their state, address families, prefix counts, and flap time.
-- List OSPF neighbors and inspect their `ospfLsaRec` LSAs from `ospfDb` by node, VRF, and area.
+- List BGP peers and inspect their state, prefix counts, and flap time.
+- List OSPF neighbors 
 - List tenant VRFs with L3Out, deployment, and IPv4/IPv6 route counts.
-- Retrieve a VRF routing table with next hops, export it to CSV, and compare it with a saved snapshot.
+- Retrieve a VRF routing table, export it to CSV, and compare it with a saved snapshot.
 - List L3Outs and inspect their profiles, interfaces, peers, External EPGs, and route-control policies.
 - Retrieve BGP neighbor details and received or advertised routes from a leaf over SSH, in raw or parsed form.
+- Run VRF-scoped `iping` or `itraceroute` commands from the main-menu Troubleshoot utility.
 - Export parsed BGP tables to CSV and compare them with saved tables.
 - Filter and sort result lists, and refresh APIC authentication tokens while logged in.
 
 ## Requirements
 
 - Python 3.9 or later.
-- Tkinter for your Python installation (on Debian/Ubuntu, install the `python3-tk` system package if it is missing).
-- Network access to the configured APIC over HTTPS. BGP SSH retrieval also requires SSH access to the leaf's out-of-band management address.
+- Network access to the configured APIC over HTTPS.
+- Network access to the leaf OOB address via SSH for retrieving BGP tables that can't be get through REST from the APIC
+
+## Dependencies
+
+The Python packages are listed in `requirements.txt`:
+
+- `requests`
+- `PyYAML`
+- `Netmiko`
+- `ntc-templates`
 
 ## Installation and launch
 
-Run these commands from the project directory. A virtual environment is recommended:
-
 ```bash
+git clone https://github.com/routingalchemy/ACI_Routing_Toolkit.git
+cd ACI_Routing_Toolkit
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 python art_app.py
 ```
-
-On Windows, activate the environment with `.venv\\Scripts\\activate` instead of the `source` command. Tkinter must be available in the selected Python installation.
 
 ## Configuration
 
@@ -67,8 +75,8 @@ settings:
 ## Using the application
 
 1. Select an APIC, enter credentials if they were not loaded from the config, and choose **Login**.
-2. Select **Get VRFs**, **Get L3Out**, **Get BGP peers**, or **Get OSPF neighbors** to retrieve that view. Use the filter, quick-filter, and sort controls above the results.
-3. Double-click a result to open its details. OSPF neighbor details include `ospfLsaRec` LSAs retrieved as children of `ospfDb`; VRF details include a routing-table tab; BGP peer details include SSH tabs for neighbor information, received routes, and advertised routes.
+2. Select **Get VRFs**, **Get L3Out**, **Get BGP peers**, or **Get OSPF neighbors** to retrieve that view. Use the filter, quick-filter, and sort controls above the results. Choose **Troubleshoot** from the main menu to run `iping` or `itraceroute` from a selected leaf in a chosen VRF.
+3. Double-click a result to open its details. In the VRF routing-table tab, double-click a route to open the remote lookup; use **Reload devices** to re-read its configured SSH hosts from `config.yaml`. OSPF neighbor details include `ospfLsaRec` LSAs retrieved as children of `ospfDb`; BGP peer details include SSH tabs for neighbor information, received routes, and advertised routes.
 4. For SSH retrieval, enter credentials accepted by the leaf. The first connection to an unknown SSH host key asks for confirmation. Independently verify the displayed fingerprint before accepting; accepted keys are saved in `~/.ssh/known_hosts`. A changed key is blocked.
 5. Parsed routing tables and BGP routes can be exported to CSV and compared with a prior export. Exports are written under `routing_tables/` or `bgp_tables/` beside `art_app.py`. Raw BGP output is displayed but is not available for CSV export or comparison.
 6. Choose **Logout** when finished.
@@ -81,6 +89,3 @@ settings:
 - Keep SSH host-key checking enabled. Verify an unknown fingerprint through a trusted channel before accepting it.
 - The application currently disables urllib3's insecure-request warning globally. This does not make an untrusted APIC certificate safe; configure certificate verification appropriately.
 
-## Dependencies
-
-The Python packages are listed in `requirements.txt`: Requests, PyYAML, Netmiko, and `ntc-templates`. Parsed BGP output requires the matching NX-OS template supplied by `ntc-templates`; raw neighbor output does not require parsing.
